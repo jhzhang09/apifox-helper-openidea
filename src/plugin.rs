@@ -42,6 +42,22 @@ fn config_state(ctx: &Invocation) -> Result<Value, Error> {
         json!({"op":"config","config":load_config(ctx)?,"tokenSet":host::secret_is_set("apifox_token"),"projectRoot":project(ctx)?.root()?}),
     )
 }
+fn panel_context(ctx: &Invocation) -> Result<Value, Error> {
+    if ctx.project().is_some() {
+        let mut state = config_state(ctx)?;
+        let root = project(ctx)?.root()?;
+        match crate::snapshot::load(&root) {
+            Ok(snapshot) => state["snapshot"] = json!(snapshot),
+            Err(error) => {
+                state["snapshot"] = Value::Null;
+                state["snapshotError"] = json!(error.to_string());
+            }
+        }
+        Ok(state)
+    } else {
+        Ok(json!({"op":"config","config":Config::default(),"tokenSet":false,"projectRoot":null}))
+    }
+}
 fn relative(root: &str, path: &str) -> String {
     path.strip_prefix(root)
         .unwrap_or(path)
@@ -60,7 +76,6 @@ pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
     paths.extend(kt);
     paths.sort();
     paths.dedup();
-    let editors = host::open_editors()?;
     let mut classes = Vec::new();
     let mut settings = crate::project::ProjectSettings::default();
     let mut bytes = 0;
@@ -73,15 +88,8 @@ pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
         if task.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        // document() 优先使用未保存的编辑缓冲区，DTO 与 Controller 使用同一快照来源。
-        let text = if editors
-            .iter()
-            .any(|e| e.path == *path || relative(&root, &e.path) == relative(&root, path))
-        {
-            project.document(path)?.text
-        } else {
-            project.read_file(path)?
-        };
+        // read_file 已优先读取未保存缓冲区；恢复的标签页不一定有版本化内存文档。
+        let text = project.read_file(path)?;
         bytes += text.len();
         if bytes > MAX_SOURCE_BYTES {
             return Err("源码大小超过 64 MiB，已停止导出".into());
@@ -238,7 +246,7 @@ fn configure(ctx: &Invocation) -> Result<Option<String>, Error> {
     else {
         return Ok(None);
     };
-    c.project_id = id.trim().into();
+    c.set_project_id(&id);
     let Some(folder) = host::input(
         "接口目录 ID（留空为根目录）",
         c.endpoint_folder.map(|v| v.to_string()).as_deref(),
@@ -420,11 +428,10 @@ impl Views for ApifoxHelper {
             return Err(Error::NotFound(view.into()));
         }
         // 配置随页面渲染同步传入，不依赖 iframe 初始化消息的回复时机。
-        let initial = if ctx.project().is_some() {
-            config_state(ctx)?
-        } else {
-            Value::Null
-        };
+        let mut initial = panel_context(ctx)?;
+        // 宿主会截断超过 4 MiB 的 HTML；快照通过独立消息恢复，不能嵌入页面脚本。
+        initial["snapshotAvailable"] = json!(initial["snapshot"].is_object());
+        initial.as_object_mut().unwrap().remove("snapshot");
         let initial = initial
             .to_string()
             .replace('<', "\\u003c")
@@ -438,11 +445,33 @@ impl Views for ApifoxHelper {
             return Err(Error::NotFound(view.into()));
         }
         if let ViewEvent::Message(message) = event {
+            let request: Value =
+                serde_json::from_str(&message).map_err(|e| Error::Invalid(e.to_string()))?;
+            let root = ctx.project().map(|p| p.root()).transpose()?;
             let result = (|| -> Result<Value, Error> {
-                let v: Value =
-                    serde_json::from_str(&message).map_err(|e| Error::Invalid(e.to_string()))?;
+                let v = &request;
+                let action = v["op"].as_str().unwrap_or("");
+                // 面板可能由宿主复用；读取、写入和网络动作都必须属于当前本地项目。
+                if !matches!(action, "init" | "context")
+                    && (root.is_none() || v["projectRoot"].as_str() != root.as_deref())
+                {
+                    let mut state = panel_context(ctx)?;
+                    state["contextChanged"] = json!(true);
+                    state["message"] =
+                        json!("本地项目已切换，已阻止旧面板动作，请在当前项目重新操作");
+                    return Ok(state);
+                }
                 match v["op"].as_str().unwrap_or("") {
-                    "init" => config_state(ctx),
+                    "init" => panel_context(ctx),
+                    "context" => {
+                        if v["projectRoot"].as_str() == root.as_deref() {
+                            Ok(json!({"op":"context"}))
+                        } else {
+                            let mut state = panel_context(ctx)?;
+                            state["contextChanged"] = json!(true);
+                            Ok(state)
+                        }
+                    }
                     "list-projects" => {
                         let list = apifox::list_projects()?;
                         Ok(json!({"op":"projects","projects":list.projects,"notices":list.notices}))
@@ -455,9 +484,14 @@ impl Views for ApifoxHelper {
                         Ok(state)
                     }
                     "scan" => {
-                        let scope = v["scope"].as_str().unwrap_or("project");
-                        let export = scan(ctx, scope)?;
-                        Ok(json!({"op":"scan","export":export}))
+                        // 侧栏扫描固定整个项目，局部导出命令不会覆盖完整快照。
+                        let export = scan(ctx, "project")?;
+                        let snapshot =
+                            crate::snapshot::Snapshot::new(project(ctx)?.root()?, export)?;
+                        let error = snapshot.save().err().map(|e| e.to_string());
+                        Ok(
+                            json!({"op":"scan","export":snapshot.export,"scannedAtMs":snapshot.scanned_at_ms,"snapshotSaved":error.is_none(),"snapshotError":error}),
+                        )
                     }
                     "export" | "upload" => {
                         let export = scan(ctx, v["scope"].as_str().unwrap_or("project"))?;
@@ -481,7 +515,7 @@ impl Views for ApifoxHelper {
                         };
                         Ok(json!({"op":"notice","message":result}))
                     }
-                    "debug" => Ok(json!({"op":"response","response":send_debug(&v)?})),
+                    "debug" => Ok(json!({"op":"response","response":send_debug(v)?})),
                     "navigate" => {
                         let export = scan(ctx, "project")?;
                         // 通过稳定标识重新定位当前声明，避免扫描后编辑源码导致旧行号失效。
@@ -501,10 +535,14 @@ impl Views for ApifoxHelper {
                     _ => Err("未知的侧栏动作".into()),
                 }
             })();
-            match result {
-                Ok(value) => post(value)?,
-                Err(e) => post(json!({"op":"error","message":e.to_string()}))?,
-            }
+            let mut response = match result {
+                Ok(value) => value,
+                Err(e) => json!({"op":"error","message":e.to_string()}),
+            };
+            response["projectRoot"] = json!(root);
+            response["requestId"] = request["requestId"].clone();
+            response["clientId"] = request["clientId"].clone();
+            post(response)?;
         }
         Ok(())
     }

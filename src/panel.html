@@ -710,6 +710,12 @@
       <summary id="diagnostic-summary"></summary>
       <ul id="diagnostic-list" class="diagnostic-list"></ul>
     </details>
+    <div
+      id="scan-time"
+      class="hint hidden"
+      role="status"
+      style="padding: 0 16px"
+    ></div>
     <main>
       <div class="tree-toolbar">
         <button id="expand-all" class="tree-control" title="展开所有节点">
@@ -772,6 +778,14 @@
       "use strict";
       const INITIAL = "__APIFOX_CONFIG__";
       const $ = (id) => document.getElementById(id);
+      const clientId =
+        Date.now().toString(36) + Math.random().toString(36).slice(2);
+      const projectStates = new Map();
+      let projectRoot = null,
+        requestSequence = 0,
+        pendingId = null,
+        contextId = null,
+        contextSentAt = 0;
       let remoteProjects = [],
         filteredProjects = [],
         projectsLoaded = false,
@@ -780,6 +794,8 @@
         pendingAction = null,
         configDirty = false,
         result = null,
+        scannedAtMs = null,
+        snapshotSaved = false,
         activeKey = null,
         menuTarget = null,
         menuAnchor = null,
@@ -796,6 +812,39 @@
       function status(s, error = false) {
         $("status").textContent = s;
         $("status").classList.toggle("error", error);
+      }
+      function scanTime(cached) {
+        const valid = Number.isFinite(scannedAtMs) && scannedAtMs > 0;
+        $("scan-time").classList.toggle("hidden", !valid);
+        $("scan-time").textContent = valid
+          ? `${cached ? "上次扫描" : "扫描时间"}：${new Date(scannedAtMs).toLocaleString("zh-CN", { hour12: false })} · ${cached ? "已恢复缓存快照，源码可能已变化；" : ""}${snapshotSaved ? "" : "结果未保存；"}上传前自动重新扫描校验`
+          : "";
+      }
+      function renderScan(value, time, saved, cached) {
+        rememberExpansion();
+        result = value;
+        scannedAtMs = time ?? null;
+        snapshotSaved = saved;
+        activeKey = null;
+        viewList(false);
+        if (result.endpoints.length) show(0);
+        diagnostics(result);
+        scanTime(cached);
+        status(
+          `${cached ? "已恢复上次扫描，" : ""}识别到 ${result.endpoints.length} 个接口，${result.warnings.length} 条错误，${(result.notices || []).length} 条结构提示。`,
+          result.warnings.length > 0,
+        );
+      }
+      function restoreSnapshot(state) {
+        const snapshot = state.snapshot;
+        if (
+          snapshot?.projectRoot === projectRoot &&
+          (!result || snapshot.scannedAtMs > (scannedAtMs || 0))
+        ) {
+          renderScan(snapshot.export, snapshot.scannedAtMs, true, true);
+        }
+        if (state.snapshotError)
+          status("扫描快照未恢复：" + state.snapshotError, true);
       }
       function diagnostics(value) {
         const warnings = value.warnings || [],
@@ -818,14 +867,160 @@
         busy = value;
         if (value) closeMenu(false);
         for (const id of ["scan", "send", "save-config", "load-projects"])
-          $(id).disabled = value;
+          $(id).disabled = value || projectRoot === null;
       }
       function send(v) {
         if (busy) return;
         if (v.op !== "list-projects") closeProjectPicker();
         pendingAction = v.op;
+        pendingId = ++requestSequence;
         lock(true);
-        openidea.postMessage(JSON.stringify(v));
+        openidea.postMessage(
+          JSON.stringify({ ...v, projectRoot, clientId, requestId: pendingId }),
+        );
+      }
+      function checkContext() {
+        // 宿主可能在切换项目时丢弃旧窗口的排队事件，探测不能永久卡在等待回复。
+        if (contextId !== null && Date.now() - contextSentAt < 3000) return;
+        contextId = ++requestSequence;
+        contextSentAt = Date.now();
+        openidea.postMessage(
+          JSON.stringify({
+            op: "context",
+            projectRoot,
+            clientId,
+            requestId: contextId,
+          }),
+        );
+      }
+      const formIds = [
+        "project_id",
+        "endpoint_folder",
+        "schema_folder",
+        "branch",
+        "module",
+        "overwrite",
+        "title",
+        "base_url",
+        "search",
+        "method",
+        "url",
+        "headers",
+        "body",
+      ];
+      function switchProject(nextRoot) {
+        if (nextRoot === projectRoot) return false;
+        if (projectRoot !== null) {
+          rememberExpansion();
+          projectStates.set(projectRoot, {
+            result,
+            scannedAtMs,
+            snapshotSaved,
+            activeKey,
+            config,
+            configDirty,
+            expanded: new Set(expanded),
+            treeSearch,
+            fields: Object.fromEntries(formIds.map((id) => [id, $(id).value])),
+            response: $("response").textContent,
+            message: $("status").textContent,
+            error: $("status").classList.contains("error"),
+            tab:
+              document.querySelector('[data-tab][aria-selected="true"]')
+                ?.dataset.tab || "model",
+            settingsOpen: !$("settings").classList.contains("hidden"),
+          });
+        }
+        projectRoot = nextRoot;
+        pendingId = null;
+        pendingAction = null;
+        lock(false);
+        closeMenu(false);
+        closeProjectPicker();
+        remoteProjects = [];
+        filteredProjects = [];
+        projectsLoaded = false;
+        projectListMessage = "";
+        $("project-filter").value = "";
+        result = null;
+        scannedAtMs = null;
+        snapshotSaved = false;
+        scanTime(false);
+        activeKey = null;
+        config = {};
+        configDirty = false;
+        expanded = new Set(["root"]);
+        treeSearch = "";
+        for (const id of formIds) $(id).value = "";
+        $("method").value = "GET";
+        $("headers").value = "{}";
+        $("response").textContent = "尚未发送请求";
+        $("json").textContent = "";
+        $("model").replaceChildren(
+          text("p", "选择接口查看响应结构。循环引用保留为模型引用。", "hint"),
+        );
+        $("settings").classList.add("hidden");
+        $("settings-toggle").setAttribute("aria-expanded", "false");
+        document.querySelector('[data-tab="model"]').click();
+        diagnostics({});
+        viewList(false);
+        counts();
+        status(
+          nextRoot ? "当前项目尚未扫描，请点击扫描接口。" : "请先打开项目。",
+        );
+        return true;
+      }
+      function restoreProject() {
+        const saved = projectStates.get(projectRoot);
+        if (!saved) return;
+        ({
+          result,
+          scannedAtMs,
+          snapshotSaved,
+          activeKey,
+          expanded,
+          treeSearch,
+        } = saved);
+        if (saved.configDirty) {
+          config = saved.config;
+          configDirty = true;
+        }
+        for (const [id, value] of Object.entries(saved.fields)) {
+          if (
+            saved.configDirty ||
+            ![
+              "project_id",
+              "endpoint_folder",
+              "schema_folder",
+              "branch",
+              "module",
+              "overwrite",
+              "title",
+              "base_url",
+            ].includes(id)
+          )
+            $(id).value = value;
+        }
+        viewList(false);
+        if (result) {
+          const index = result.endpoints.findIndex(
+            (e) => "endpoint:" + e.operation.operationId === activeKey,
+          );
+          show(index < 0 ? 0 : index);
+          diagnostics(result);
+          for (const id of ["method", "url", "headers", "body"])
+            $(id).value = saved.fields[id];
+        }
+        $("response").textContent = saved.response;
+        document.querySelector(`[data-tab="${saved.tab}"]`).click();
+        $("settings").classList.toggle("hidden", !saved.settingsOpen);
+        $("settings-toggle").setAttribute(
+          "aria-expanded",
+          String(saved.settingsOpen),
+        );
+        status(saved.message, saved.error);
+        scanTime(true);
+        projectCaption();
       }
       // 以源码身份构造分组，显示名称相同的 Controller 也不会合并。
       function endpointIdentity(e) {
@@ -1659,29 +1854,35 @@
         }
       };
       openidea.onMessage((raw) => {
-        const action = pendingAction;
-        pendingAction = null;
-        lock(false);
         const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (v.clientId !== clientId) return;
+        const contextReply = v.requestId === contextId;
+        if (v.requestId !== pendingId && !contextReply) return;
+        if (contextReply) contextId = null;
+        const action = pendingAction;
+        if (!contextReply) {
+          pendingId = null;
+          pendingAction = null;
+          lock(false);
+        }
         if (v.op === "config") {
-          if (!configDirty || v.saved === true) applyConfig(v);
-        } else if (v.op === "projects") {
+          const changed = switchProject(v.projectRoot ?? null);
+          if (changed || !configDirty || v.saved === true) applyConfig(v);
+          if (changed) restoreProject();
+          restoreSnapshot(v);
+          if (changed && v.message) status(v.message);
+        } else if (v.projectRoot !== projectRoot) return;
+        if (contextReply) return;
+        if (v.op === "projects") {
           remoteProjects = v.projects;
           projectsLoaded = true;
           projectListMessage = v.notices?.join(" ") || "";
           renderProjects();
           projectCaption();
         } else if (v.op === "scan") {
-          rememberExpansion();
-          result = v.export;
-          activeKey = null;
-          viewList(false);
-          show(0);
-          diagnostics(result);
-          status(
-            `识别到 ${result.endpoints.length} 个接口，${result.warnings.length} 条错误，${(result.notices || []).length} 条结构提示。`,
-            result.warnings.length > 0,
-          );
+          renderScan(v.export, v.scannedAtMs, v.snapshotSaved === true, false);
+          if (v.snapshotError)
+            status("扫描完成，但本次结果未持久化：" + v.snapshotError, true);
         } else if (v.op === "response") {
           $("response").textContent = JSON.stringify(v.response, null, 2);
           status("请求完成，HTTP " + v.response.status);
@@ -1693,8 +1894,19 @@
           }
         } else if (v.op === "notice") status(v.message);
       });
-      if (INITIAL && typeof INITIAL === "object") applyConfig(INITIAL);
-      else openidea.postMessage(JSON.stringify({ op: "init" }));
+      if (INITIAL && typeof INITIAL === "object") {
+        projectRoot = INITIAL.projectRoot ?? null;
+        applyConfig(INITIAL);
+        restoreSnapshot(INITIAL);
+        lock(false);
+        if (INITIAL.snapshotAvailable) send({ op: "init" });
+      } else send({ op: "init" });
+      window.addEventListener("focus", checkContext);
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) checkContext();
+      });
+      // API 1.9 没有项目切换事件；轻量查询宿主上下文覆盖同窗切换及恢复面板。
+      window.setInterval(checkContext, 750);
     </script>
   </body>
 </html>

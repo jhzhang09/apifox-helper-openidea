@@ -6,6 +6,7 @@
 # 发布包作为 Release 附件，不纳入 Git 历史。
 /dist/*.oiplugin
 /dist/SHA256SUMS
+/dist/build-info.json
 
 # 仅供本地核对，不公开原始 IDEA 安装包和用户项目回归入口。
 /ApifoxHelper-*.zip

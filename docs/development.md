@@ -49,9 +49,12 @@ cargo run --locked --example export -- examples/demo yaml > /tmp/example-openapi
 ```text
 dist/jhzhang.apifox-helper-<version>.oiplugin
 dist/SHA256SUMS
+dist/build-info.json
 ```
 
 已安装 wasm-tools 时，构建脚本会额外运行组件格式校验。编译路径会重映射为通用目录，避免将构建机的本地用户名和绝对路径写入发布组件。这不保证不同平台或工具链产生逐字节相同的 WASM。
+
+build-info.json 记录 rustc -Vv（含 host）、Cargo 版本、目标、附加编译选项、源码提交、源码是否干净、CI 运行编号、组件大小及关键文件 SHA256。源码包不带 Git 信息时标为非干净来源，不能用于正式 CI 签名。
 
 如果已安装匹配版本的官方工具：
 
@@ -86,7 +89,7 @@ python3 scripts/third_party.py
 3. 提交源码后创建 v<version> 标签。
 4. 对正式发布包执行签名，再在 Releases 附加对应的 .oiplugin 和 SHA256SUMS，说明兼容版本及签名身份。
 
-CI 对 push 和 PR 执行 Rust、侧栏和构建检查，保存短期构建产物。Release 本身由维护者显式发布，CI 不自动对外上传接口文档或读取 Apifox 令牌。
+CI 对 push 和 PR 执行 Rust、侧栏和构建检查，保存未签名包和校验和。未签名包包含 dist/plugin.wasm 与 dist/build-info.json，下载后可以直接提取组件和编译环境摘要。Release 本身由维护者显式发布，CI 不自动对外上传接口文档或读取 Apifox 令牌。
 
 ## 签名与社区市场
 
@@ -102,14 +105,17 @@ openidea-plugin keygen ~/.config/openidea-publishers/jhzhang.key
 
 私钥需备份到维护者自己的安全存储，后续版本复用该文件。不要把私钥放入源码、日志或发布附件。注册表只提交工具打印的公钥。
 
-构建并签名（已用官方 v0.1.47 工具验证）：
+本地候选包可用 build.sh 构建；正式 Release 必须从对应提交的公开 CI 下载产物后签名，以便核对源码、公开构建和最终安装包：
 
 ```sh
-./scripts/build.sh
-./scripts/sign.sh ~/.config/openidea-publishers/jhzhang.key
+gh run download <通过的CI运行编号> --repo jhzhang09/apifox-helper-openidea \
+  --name apifox-helper-openidea --dir /tmp/apifox-ci-artifact
+./scripts/sign.sh ~/.config/openidea-publishers/jhzhang.key /tmp/apifox-ci-artifact
 ```
 
-`sign.sh` 使用官方工具完成检查、签名打包和最终安装检查，并重新计算 SHA256SUMS；也可通过 OPENIDEA_PLUGIN 指定工具路径。签名完成后不要再次运行 build.sh 覆盖正式包。
+`sign.sh` 从 CI 产物目录中的唯一未签名包读取组件和构建信息（也支持已提取的 plugin.wasm、build-info.json），校验 CI 来源、干净源码状态、当前提交和输入摘要，再直接使用 CI 的组件进行官方签名打包，不重新编译。它拒绝不同提交或摘要不匹配的产物；仍可只传私钥签本地测试包，也可通过 OPENIDEA_PLUGIN 指定工具路径。签名完成后不要再次运行 build.sh 覆盖正式包。
+
+正式 Release 同时附加 build-info.json，并给出 CI 链接；解压签名包，确认其中 dist/plugin.wasm 的 SHA256 与该公开 CI 的组件摘要一致。原生构建与 Linux CI 的二进制可能不同，不能用未解释的平台差异代替对应核验。
 
 将最终包和 SHA256SUMS 上传 Release 后，向 [openidea-plugins](https://github.com/l0ng-ai/openidea-plugins) 提交 PR：
 

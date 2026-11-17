@@ -365,6 +365,62 @@ fn operation(class: &Class, m: &Method, schemas: &mut Schemas, path: &str) -> Va
     op
 }
 
+/// Spring 正则可以包含量词、字符类和转义括号；只有变量最外层的括号进入 OpenAPI。
+fn normalize_route(path: &str) -> Result<String, String> {
+    let mut cleaned = String::new();
+    let (mut variable, mut regex, mut escaped) = (false, false, false);
+    let (mut braces, mut classes, mut name_len) = (0usize, 0usize, 0usize);
+    for ch in path.chars() {
+        if regex {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '[' => classes += 1,
+                ']' if classes > 0 => classes -= 1,
+                _ if classes > 0 => (),
+                '{' => braces += 1,
+                '}' if braces > 0 => braces -= 1,
+                '}' => {
+                    variable = false;
+                    regex = false;
+                    cleaned.push('}');
+                }
+                _ => (),
+            }
+        } else if variable {
+            match ch {
+                ':' if name_len > 0 => regex = true,
+                '}' if name_len > 0 => {
+                    variable = false;
+                    cleaned.push('}');
+                }
+                '{' | '}' | ':' => return Err("变量名为空或包含嵌套括号".into()),
+                _ => {
+                    name_len += 1;
+                    cleaned.push(ch);
+                }
+            }
+        } else {
+            match ch {
+                '{' => {
+                    variable = true;
+                    name_len = 0;
+                    cleaned.push(ch);
+                }
+                '}' => return Err("存在多余的闭合括号".into()),
+                _ => cleaned.push(ch),
+            }
+        }
+    }
+    if variable {
+        return Err("路径变量或正则未闭合".into());
+    }
+    Ok(cleaned)
+}
+
 pub fn generate(classes: &[Class], scope: &Scope, title: &str) -> Export {
     generate_with_project(
         classes,
@@ -451,39 +507,28 @@ pub fn generate_with_project(
                                 .insert(format!("未解析路由 {path}（{}）", c.path));
                             continue;
                         }
-                        let mut op = operation(c, m, &mut schemas, &path);
+                        let cleaned = match normalize_route(&path) {
+                            Ok(path) => path,
+                            Err(error) => {
+                                schemas.warnings.insert(format!(
+                                    "无法规范化路由 {path}（{}）：{error}",
+                                    c.path
+                                ));
+                                continue;
+                            }
+                        };
+                        let mut op = operation(c, m, &mut schemas, &cleaned);
                         let id = format!("{}_{}_{}_{}", c.qualified(), m.name, verb, path);
                         let id = crate::schema::component_key(&id);
                         if !operation_ids.insert(id.clone())
-                            || paths[&path][verb.to_lowercase()].is_object()
+                            || paths[&cleaned][verb.to_lowercase()].is_object()
                         {
-                            schemas
-                                .warnings
-                                .insert(format!("重复路由 {verb} {path}，保留首个声明"));
+                            schemas.warnings.insert(format!(
+                                "重复路由 {verb} {cleaned}（原始路由 {path}），保留首个声明"
+                            ));
                             continue;
                         }
                         op["operationId"] = json!(id);
-                        // Spring 路径正则不属于 OpenAPI 参数名。
-                        let mut cleaned = String::new();
-                        let mut inside = false;
-                        let mut skip = false;
-                        for ch in path.chars() {
-                            match ch {
-                                '{' => {
-                                    inside = true;
-                                    skip = false;
-                                    cleaned.push(ch);
-                                }
-                                '}' => {
-                                    inside = false;
-                                    skip = false;
-                                    cleaned.push(ch);
-                                }
-                                ':' if inside => skip = true,
-                                _ if !skip => cleaned.push(ch),
-                                _ => (),
-                            }
-                        }
                         if paths[&cleaned].is_null() {
                             paths[&cleaned] = json!({});
                         }

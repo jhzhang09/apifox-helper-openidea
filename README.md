@@ -27,6 +27,23 @@ public ResponseEntity<Result<Page<User>>> list()
 
 如果源码定义 `Result.payload`、`Page.rows`、`User.address`，生成结构会保留 `payload → rows[] → address`，并通过 `$ref` 引用对应模型。原始泛型没有提供类型参数时保留开放结构并提示，无法解析的业务类型会明确报告。
 
+## 可视化工作流
+
+本插件以常驻侧栏组织“扫描 → 检查模型 → 调试 → 同步”，用户可以在上传前检查接口与模型，并按模块或 Controller 操作。
+
+界面上的主要能力包括：接口树搜索与分组右键操作、双击跳转源码、嵌套响应模型展开、OpenAPI 预览、Apifox 项目搜索选择，以及请求与响应调试。扫描结果和配置按本地项目隔离；关闭工程后可恢复带时间标记的上次扫描，上传时重新读取源码校验。
+
+与已发布的 [Spring Api Export v0.1.2](https://github.com/YUYUY9527/spring-api-export/tree/673d3a895bc14074034bd132097a629de24e31b6) 相比：
+
+| 交互 | Spring Api Export v0.1.2 | 本插件 |
+| --- | --- | --- |
+| 入口 | 右键菜单、命令、宿主输入框与多选弹窗 | 常驻侧栏，同时保留命令入口 |
+| 接口选择 | 弹窗接口列表 | 模块/包/Controller 树、搜索、分组右键操作 |
+| 文档检查 | 导出 Markdown / OpenAPI 文件 | 侧栏响应模型树与 OpenAPI 预览 |
+| 调试 | 清单中未注册调试命令或视图 | 集成 HTTP 请求编辑、发送和响应查看 |
+
+上述对比来自该版本的 [清单](https://github.com/YUYUY9527/spring-api-export/blob/673d3a895bc14074034bd132097a629de24e31b6/plugin.toml) 和 [命令实现](https://github.com/YUYUY9527/spring-api-export/blob/673d3a895bc14074034bd132097a629de24e31b6/src/lib.rs)。它已有菜单与弹窗界面；本插件的区别是常驻可视化工作台，并提供 Kotlin/JAX-RS 源码识别与调试流程。
+
 ## 兼容性
 
 | 项目 | 要求 |
@@ -52,6 +69,10 @@ public ResponseEntity<Result<Page<User>>> list()
 ### 离线扫描与导出
 
 打开后端项目，点击侧栏 **扫描接口**。扫描固定覆盖整个项目的生产源码，优先使用已打开文件的未保存内容。
+
+扫描不要求选中目录或提前打开源码文件；切换项目后仍按当前项目读取，恢复标签页未载入内存文档时可以读取磁盘内容。
+
+完整扫描自动按本地项目保存最后一次结果和扫描时间，关闭工程后重开会恢复，并标记为缓存快照。上传前始终重新扫描当前源码并校验，缓存不会直接作为上传文档。快照保存失败会明确提示，详见 [扫描快照](docs/configuration.md#扫描快照)。
 
 树形结果按以下层级展示：
 

@@ -4,8 +4,19 @@ const fs = require("node:fs");
 const { JSDOM } = require("jsdom");
 const html = fs.readFileSync("src/panel.html", "utf8");
 function panel(initial) {
+  initial ??= {
+    op: "config",
+    projectRoot: "/project",
+    config: {},
+    tokenSet: false,
+  };
   const sent = [];
+  const rawSent = [];
   let receive;
+  let inFlight = false;
+  let contextTick;
+  let clock = Date.now();
+  let boundRoot = initial?.projectRoot ?? "/project";
   const source = initial
     ? html.replace(
         '"__APIFOX_CONFIG__"',
@@ -15,9 +26,18 @@ function panel(initial) {
   const dom = new JSDOM(source, {
     runScripts: "dangerously",
     beforeParse(w) {
+      w.Date.now = () => clock;
+      w.setInterval = (fn) => {
+        contextTick = fn;
+        return 1;
+      };
       w.openidea = {
         postMessage(s) {
-          sent.push(JSON.parse(s));
+          const value = JSON.parse(s);
+          rawSent.push(value);
+          inFlight = true;
+          const { projectRoot, clientId, requestId, ...action } = value;
+          sent.push(action);
         },
         onMessage(fn) {
           receive = fn;
@@ -30,7 +50,30 @@ function panel(initial) {
     window: dom.window,
     $: (id) => dom.window.document.getElementById(id),
     sent,
-    reply: (v) => receive(JSON.stringify(v)),
+    rawSent,
+    tickContext: () => contextTick(),
+    advanceClock: (ms) => {
+      clock += ms;
+    },
+    receive: (v) => receive(JSON.stringify(v)),
+    reply: (v) => {
+      // 旧测试用 scan 回复直接建立界面样例，这里补上真实的扫描请求。
+      if (v.op === "scan" && !inFlight) {
+        dom.window.document.getElementById("scan").click();
+        sent.pop();
+      }
+      const request = rawSent.at(-1);
+      inFlight = false;
+      if (v.projectRoot !== undefined) boundRoot = v.projectRoot;
+      receive(
+        JSON.stringify({
+          clientId: request?.clientId,
+          requestId: request?.requestId,
+          projectRoot: boundRoot,
+          ...v,
+        }),
+      );
+    },
   };
 }
 const operation = {
@@ -86,6 +129,312 @@ const exp = {
     },
   ],
 };
+
+function localState(root, id) {
+  return {
+    op: "config",
+    projectRoot: root,
+    config: {
+      project_id: id,
+      project_name: "远端" + id,
+      team_name: "团队" + id,
+      title: "文档" + id,
+      base_url: "http://localhost:" + id,
+    },
+    tokenSet: true,
+  };
+}
+function persistedState(
+  root,
+  id,
+  label,
+  time = Date.UTC(2026, 10, 18, 1, 2, 3),
+) {
+  const state = localState(root, id);
+  const value = JSON.parse(JSON.stringify(exp));
+  value.endpoints[0].operation.summary = label;
+  state.snapshot = {
+    version: 1,
+    projectRoot: root,
+    scannedAtMs: time,
+    export: value,
+  };
+  return state;
+}
+test("关闭页面后重建面板直接恢复持久化结果与扫描时间，并明确标记缓存", () => {
+  const state = persistedState("/A", "8001", "A持久化接口");
+  const first = panel(state);
+  assert.match(first.$("list").textContent, /A持久化接口/);
+  first.window.close();
+  const reopened = panel(state);
+  assert.equal(reopened.sent.length, 0);
+  assert.match(reopened.$("list").textContent, /A持久化接口/);
+  assert.match(reopened.$("model").textContent, /payload/);
+  assert.match(reopened.$("scan-time").textContent, /上次扫描：.*2026/);
+  assert.match(
+    reopened.$("scan-time").textContent,
+    /缓存快照.*源码可能已变化.*上传前自动重新扫描校验/,
+  );
+  assert.equal(reopened.$("scan-time").classList.contains("hidden"), false);
+  context(reopened, reopened.$("list").querySelector("[data-endpoint]"));
+  action(reopened, "upload");
+  assert.equal(reopened.rawSent.at(-1).projectRoot, "/A");
+  assert.deepEqual(reopened.rawSent.at(-1).selected, ["stable-users-get"]);
+  assert.equal(reopened.rawSent.at(-1).document, undefined);
+  reopened.window.close();
+});
+test("真实页面通过初始化消息加载快照，不在 HTML 中嵌入大份扫描文档", () => {
+  const state = localState("/A", "8001");
+  state.snapshotAvailable = true;
+  const p = panel(state);
+  assert.equal(p.sent.at(-1).op, "init");
+  assert.equal(p.$("scan").disabled, true);
+  p.reply(persistedState("/A", "8001", "磁盘快照接口"));
+  assert.match(p.$("list").textContent, /磁盘快照接口/);
+  assert.match(p.$("scan-time").textContent, /上次扫描/);
+  assert.equal(p.$("scan").disabled, false);
+  p.window.close();
+});
+test("切换到另一项目恢复它自己的磁盘快照，切回不串用结果和时间", () => {
+  const a = persistedState("/A", "8001", "A持久化接口"),
+    b = persistedState("/B", "8002", "B持久化接口", Date.UTC(2026, 10, 17));
+  const p = panel(a);
+  const aTime = p.$("scan-time").textContent;
+  changeLocalProject(p, b);
+  assert.match(p.$("list").textContent, /B持久化接口/);
+  assert.doesNotMatch(p.$("list").textContent, /A持久化接口/);
+  assert.notEqual(p.$("scan-time").textContent, aTime);
+  changeLocalProject(p, a);
+  assert.match(p.$("list").textContent, /A持久化接口/);
+  assert.equal(p.$("scan-time").textContent, aTime);
+  p.window.close();
+});
+test("忽略其他根目录的快照，损坏快照说明可见且配置仍能回填", () => {
+  const state = persistedState("/A", "8001", "A持久化接口");
+  state.snapshot.projectRoot = "/B";
+  state.snapshotError = "扫描快照损坏，请重新扫描";
+  const p = panel(state);
+  assert.equal(p.$("project_id").value, "8001");
+  assert.equal(p.$("list").querySelectorAll("[data-endpoint]").length, 0);
+  assert.equal(p.$("scan-time").classList.contains("hidden"), true);
+  assert.match(p.$("status").textContent, /快照损坏/);
+  p.window.close();
+});
+test("新扫描更新时间，迟到的旧快照不覆盖新结果，保存失败明确提示", () => {
+  const state = persistedState("/A", "8001", "上次接口");
+  const p = panel(state);
+  p.$("scan").click();
+  const request = p.rawSent.at(-1);
+  const value = JSON.parse(JSON.stringify(exp));
+  value.endpoints[0].operation.summary = "新的接口";
+  p.receive({
+    ...request,
+    op: "scan",
+    export: value,
+    scannedAtMs: state.snapshot.scannedAtMs + 60000,
+    snapshotSaved: true,
+  });
+  assert.match(p.$("scan-time").textContent, /^扫描时间/);
+  assert.doesNotMatch(p.$("scan-time").textContent, /缓存快照/);
+  p.$("settings-toggle").click();
+  p.reply(state);
+  assert.match(p.$("list").textContent, /新的接口/);
+  p.$("scan").click();
+  const next = p.rawSent.at(-1);
+  p.receive({
+    ...next,
+    op: "scan",
+    export: value,
+    scannedAtMs: state.snapshot.scannedAtMs + 120000,
+    snapshotSaved: false,
+    snapshotError: "storage is limited",
+  });
+  assert.match(
+    p.$("status").textContent,
+    /本次结果未持久化.*storage is limited/,
+  );
+  assert.match(p.$("scan-time").textContent, /结果未保存/);
+  assert.match(p.$("list").textContent, /新的接口/);
+  p.window.close();
+});
+function changeLocalProject(p, state) {
+  p.tickContext();
+  const probe = p.rawSent.at(-1);
+  assert.equal(probe.op, "context");
+  p.receive({
+    ...state,
+    clientId: probe.clientId,
+    requestId: probe.requestId,
+    contextChanged: true,
+  });
+}
+function scanLocal(p, label) {
+  p.$("scan").click();
+  const request = p.rawSent.at(-1);
+  const value = JSON.parse(JSON.stringify(exp));
+  value.endpoints[0].operation.summary = label;
+  p.receive({ ...request, op: "scan", export: value });
+  return request;
+}
+test("A 扫描后切到未扫描 B，清空树、模型、调试和旧菜单，切回恢复 A", () => {
+  const a = localState("/projects/A", "8001"),
+    b = localState("/projects/B", "8002");
+  const p = panel(a);
+  scanLocal(p, "A独有接口");
+  p.$("url").value = "http://localhost:8001/edited";
+  p.$("body").value = "A 请求体";
+  p.$("response").textContent = "A 响应";
+  context(p, p.$("list").querySelector("[data-endpoint]"));
+  changeLocalProject(p, b);
+  assert.equal(p.$("list").querySelectorAll("[data-endpoint]").length, 0);
+  assert.equal(p.$("count").textContent, "0 个接口");
+  assert.doesNotMatch(p.$("model").textContent, /payload/);
+  assert.equal(p.$("json").textContent, "");
+  assert.equal(p.$("url").value, "");
+  assert.equal(p.$("body").value, "");
+  assert.equal(p.$("response").textContent, "尚未发送请求");
+  assert.equal(p.$("context-menu").classList.contains("hidden"), true);
+  assert.equal(p.$("project_id").value, "8002");
+  assert.match(p.$("status").textContent, /尚未扫描/);
+  scanLocal(p, "B独有接口");
+  assert.match(p.$("list").textContent, /B独有接口/);
+  changeLocalProject(p, a);
+  assert.match(p.$("list").textContent, /A独有接口/);
+  assert.doesNotMatch(p.$("list").textContent, /B独有接口/);
+  assert.equal(p.$("url").value, "http://localhost:8001/edited");
+  assert.equal(p.$("body").value, "A 请求体");
+  assert.equal(p.$("response").textContent, "A 响应");
+  assert.equal(p.$("project_id").value, "8001");
+  changeLocalProject(p, b);
+  assert.match(p.$("list").textContent, /B独有接口/);
+  assert.equal(p.$("project_id").value, "8002");
+  p.window.close();
+});
+test("未保存配置和搜索词只恢复到各自本地项目", () => {
+  const a = localState("/A", "8001"),
+    b = localState("/B", "8002");
+  const p = panel(a);
+  scanLocal(p, "A接口");
+  p.$("title").value = "A未保存标题";
+  p.$("title").dispatchEvent(new p.window.Event("input"));
+  p.$("search").value = "A接口";
+  p.$("search").dispatchEvent(new p.window.Event("input"));
+  changeLocalProject(p, b);
+  assert.equal(p.$("search").value, "");
+  assert.equal(p.$("title").value, "文档8002");
+  changeLocalProject(p, a);
+  assert.equal(p.$("title").value, "A未保存标题");
+  assert.equal(p.$("search").value, "A接口");
+  p.$("save-config").click();
+  assert.equal(p.rawSent.at(-1).projectRoot, "/A");
+  assert.equal(p.rawSent.at(-1).config.title, "A未保存标题");
+  p.window.close();
+});
+test("切换项目后丢弃旧扫描及旧调试回复，不解锁当前项目请求", () => {
+  const a = localState("/A", "8001"),
+    b = localState("/B", "8002");
+  const p = panel(a);
+  p.$("scan").click();
+  const oldScan = p.rawSent.at(-1);
+  changeLocalProject(p, b);
+  p.$("scan").click();
+  const newScan = p.rawSent.at(-1);
+  p.receive({ ...oldScan, op: "scan", export: exp });
+  assert.equal(p.$("scan").disabled, true);
+  assert.equal(p.$("count").textContent, "0 个接口");
+  p.receive({ ...newScan, op: "scan", export: exp });
+  p.$("send").click();
+  const oldDebug = p.rawSent.at(-1);
+  changeLocalProject(p, a);
+  p.receive({
+    ...oldDebug,
+    op: "response",
+    response: { status: 200, body: "B的响应" },
+  });
+  assert.equal(p.$("response").textContent, "尚未发送请求");
+  // 即使再次回到 A，第一轮请求也不能污染新状态。
+  p.receive({ ...oldScan, op: "scan", export: exp });
+  assert.equal(p.$("count").textContent, "0 个接口");
+  p.window.close();
+});
+test("同项目的其他窗口消息和同项目已过期请求均被丢弃", () => {
+  const p = panel(localState("/A", "8001"));
+  p.$("scan").click();
+  const request = p.rawSent.at(-1);
+  p.receive({
+    ...request,
+    clientId: "another-window",
+    op: "scan",
+    export: exp,
+  });
+  assert.equal(p.$("scan").disabled, true);
+  assert.equal(p.$("list").querySelectorAll("[data-endpoint]").length, 0);
+  p.receive({ ...request, op: "scan", export: exp });
+  const message = p.$("status").textContent;
+  p.receive({ ...request, op: "error", message: "旧错误" });
+  assert.equal(p.$("status").textContent, message);
+  p.window.close();
+});
+test("同项目上下文探测不清空结果或解除扫描锁，关闭项目清空结果", () => {
+  const p = panel(localState("/A", "8001"));
+  scanLocal(p, "A接口");
+  p.$("scan").click();
+  p.tickContext();
+  const probe = p.rawSent.at(-1);
+  p.receive({ ...probe, op: "context" });
+  assert.match(p.$("list").textContent, /A接口/);
+  assert.equal(p.$("scan").disabled, true);
+  changeLocalProject(p, { ...localState(null, ""), tokenSet: false });
+  assert.equal(p.$("count").textContent, "0 个接口");
+  assert.match(p.$("status").textContent, /请先打开项目/);
+  p.window.close();
+});
+test("窗口激活会主动探测项目，旧页面操作被宿主拒绝时切换并清空", () => {
+  const p = panel(localState("/A", "8001"));
+  scanLocal(p, "A接口");
+  p.window.dispatchEvent(new p.window.Event("focus"));
+  const probe = p.rawSent.at(-1);
+  assert.equal(probe.op, "context");
+  p.receive({ ...probe, op: "context" });
+  p.$("scan").click();
+  const request = p.rawSent.at(-1);
+  p.receive({
+    ...request,
+    ...localState("/B", "8002"),
+    contextChanged: true,
+    message: "已阻止旧面板动作",
+  });
+  assert.equal(p.$("project_id").value, "8002");
+  assert.equal(p.$("count").textContent, "0 个接口");
+  assert.equal(p.$("scan").disabled, false);
+  p.window.close();
+});
+test("切换项目丢失探测回复时能重新检测，迟到的前次探测不会切回旧项目", () => {
+  const p = panel(localState("/A", "8001"));
+  scanLocal(p, "A接口");
+  p.tickContext();
+  const lost = p.rawSent.at(-1);
+  p.tickContext();
+  assert.equal(p.rawSent.at(-1).requestId, lost.requestId);
+  p.advanceClock(3001);
+  p.tickContext();
+  const retry = p.rawSent.at(-1);
+  assert.notEqual(retry.requestId, lost.requestId);
+  p.receive({
+    ...localState("/B", "8002"),
+    clientId: retry.clientId,
+    requestId: retry.requestId,
+  });
+  assert.equal(p.$("project_id").value, "8002");
+  p.receive({
+    ...localState("/A", "8001"),
+    clientId: lost.clientId,
+    requestId: lost.requestId,
+  });
+  assert.equal(p.$("project_id").value, "8002");
+  assert.equal(p.$("count").textContent, "0 个接口");
+  p.window.close();
+});
 test("模型预览展开嵌套对象并终止循环引用", () => {
   const p = panel();
   p.reply({ op: "scan", export: exp });

@@ -114,8 +114,10 @@ impl<'a> Schemas<'a> {
             project: project.clone(),
         }
     }
-    pub fn resolve(&self, name: &str, ctx: &Class) -> Option<&'a Class> {
-        if let Some(c) = self.classes.iter().find(|c| c.qualified() == name) {
+    pub fn resolve(&mut self, name: &str, ctx: &Class) -> Option<&'a Class> {
+        if name.contains('.')
+            && let Some(c) = self.classes.iter().find(|c| c.qualified() == name)
+        {
             return Some(c);
         }
         let mut enclosing = ctx.name.as_str();
@@ -131,37 +133,67 @@ impl<'a> Schemas<'a> {
                 None => break,
             }
         }
-        for import in &ctx.imports {
-            let wanted = if let Some(p) = import.strip_suffix(".*") {
-                format!("{p}.{name}")
-            } else if import.rsplit('.').next() == Some(name) {
-                import.clone()
-            } else {
-                continue;
-            };
-            if let Some(c) = self.classes.iter().find(|c| c.qualified() == wanted) {
-                return Some(c);
-            }
-            if !import.ends_with(".*") {
-                return None;
-            }
+        // 显式导入先绑定名称；即使源码不可用，也不能改绑到通配或同包类型。
+        let explicit: BTreeSet<_> = ctx
+            .imports
+            .iter()
+            .filter(|i| !i.ends_with(".*") && i.rsplit('.').next() == Some(name))
+            .cloned()
+            .collect();
+        if !explicit.is_empty() {
+            return self.bind_candidates(name, ctx, explicit);
         }
         if let Some(c) = self
             .classes
             .iter()
-            .find(|c| c.qualified() == format!("{}.{name}", ctx.package))
+            .find(|c| c.qualified() == format!("{}.{name}", ctx.package).trim_start_matches('.'))
         {
             return Some(c);
+        }
+        let external = Self::external_name(name, ctx);
+        let wildcard: BTreeSet<_> = ctx
+            .imports
+            .iter()
+            .filter_map(|i| i.strip_suffix(".*"))
+            .map(|p| format!("{p}.{name}"))
+            .filter(|wanted| {
+                self.classes.iter().any(|c| c.qualified() == *wanted)
+                    || (external != name && external == *wanted)
+            })
+            .collect();
+        if !wildcard.is_empty() {
+            return self.bind_candidates(name, ctx, wildcard);
         }
         // 已知外部通配 import 不能被项目其他包中的同名类抢占。
         if Self::external_name(name, ctx) != name {
             return None;
         }
-        let mut found = self.classes.iter().filter(|c| c.name == name);
-        let first = found.next();
-        if found.next().is_none() { first } else { None }
+        let candidates = self
+            .classes
+            .iter()
+            .filter(|c| c.name == name)
+            .map(Class::qualified)
+            .collect();
+        self.bind_candidates(name, ctx, candidates)
     }
-    fn canonical(&self, ty: &Type, ctx: &Class) -> Type {
+    fn bind_candidates(
+        &mut self,
+        name: &str,
+        ctx: &Class,
+        candidates: BTreeSet<String>,
+    ) -> Option<&'a Class> {
+        if candidates.len() > 1 {
+            self.warnings.insert(format!(
+                "类型 {name} 存在歧义（{}）：{}，未选择任一模型",
+                ctx.path,
+                candidates.into_iter().collect::<Vec<_>>().join("、")
+            ));
+            return None;
+        }
+        let wanted = candidates.first()?;
+        self.classes.iter().find(|c| c.qualified() == *wanted)
+    }
+    fn canonical(&mut self, ty: &Type, ctx: &Class) -> Type {
         Type {
             name: self
                 .resolve(&ty.name, ctx)

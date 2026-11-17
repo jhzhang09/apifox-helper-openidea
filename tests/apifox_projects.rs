@@ -178,7 +178,7 @@ fn view_returns_picker_data_without_saving_and_project_names_roundtrip() {
     let mut p = ApifoxHelper;
     p.handle(
         "apifox",
-        ViewEvent::Message(json!({"op":"list-projects"}).to_string()),
+        ViewEvent::Message(json!({"op":"list-projects","projectRoot":"/project"}).to_string()),
         &h.invocation(),
     )
     .unwrap();
@@ -186,7 +186,7 @@ fn view_returns_picker_data_without_saving_and_project_names_roundtrip() {
     assert_eq!(state["op"], "projects");
     assert_eq!(state["projects"], json!([]));
     assert!(host::storage::keys("").unwrap().is_empty());
-    p.handle("apifox",ViewEvent::Message(json!({"op":"save-config","config":{"project_id":"123","project_name":"项目 A","team_name":"团队 A"}}).to_string()),&h.invocation()).unwrap();
+    p.handle("apifox",ViewEvent::Message(json!({"op":"save-config","projectRoot":"/project","config":{"project_id":"123","project_name":"项目 A","team_name":"团队 A"}}).to_string()),&h.invocation()).unwrap();
     assert_eq!(load_config(&h.invocation()).unwrap().project_name, "项目 A");
     let legacy: Config = serde_json::from_str(r#"{"project_id":"123"}"#).unwrap();
     assert!(legacy.project_name.is_empty());

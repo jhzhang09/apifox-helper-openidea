@@ -10,6 +10,7 @@ manifest = tomllib.loads((root / "plugin.toml").read_text())
 files = ["plugin.toml", "dist/plugin.wasm", "icon.svg", "LICENSE", "NOTICE", "README.md",
          "vendor/openidea-plugin/LICENSE", "vendor/openidea-plugin/NOTICE"]
 files.extend(["CHANGELOG.md", "THIRD_PARTY_NOTICES.md", "vendor/openidea-plugin/UPSTREAM.md"])
+files.append("dist/build-info.json")
 files.extend(path.relative_to(root).as_posix() for path in sorted((root / "docs").glob("*.md")))
 files.extend(path.relative_to(root).as_posix() for path in sorted((root / "licenses").rglob("*")) if path.is_file())
 cargo = tomllib.loads((root / "Cargo.toml").read_text())

@@ -34,6 +34,22 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// 切换远端项目时清理其关联标识，同一项目保留已有配置。
+    pub fn set_project_id(&mut self, id: &str) {
+        let id = id.trim();
+        if self.project_id != id {
+            self.project_name.clear();
+            self.team_name.clear();
+            self.endpoint_folder = None;
+            self.schema_folder = None;
+            self.branch = None;
+            self.module = None;
+        }
+        self.project_id = id.into();
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RemoteProject {
     pub id: String,

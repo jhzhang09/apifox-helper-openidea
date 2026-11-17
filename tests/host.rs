@@ -132,7 +132,9 @@ fn renders_panel_and_routes_errors_to_the_page() {
     plugin
         .handle(
             "apifox",
-            ViewEvent::Message(json!({"op":"scan","scope":"project"}).to_string()),
+            ViewEvent::Message(
+                json!({"op":"scan","scope":"project","projectRoot":"/project"}).to_string(),
+            ),
             &h.invocation(),
         )
         .unwrap();
@@ -328,7 +330,8 @@ fn maven_module_name_falls_back_for_missing_or_unresolved_artifact() {
     assert_eq!(export.endpoints[0].module, "web");
 }
 
-fn view_message(plugin: &mut ApifoxHelper, h: &MockHost, value: Value) -> Value {
+fn view_message(plugin: &mut ApifoxHelper, h: &MockHost, mut value: Value) -> Value {
+    value["projectRoot"] = json!(h.invocation().project().unwrap().root().unwrap());
     plugin
         .handle(
             "apifox",
