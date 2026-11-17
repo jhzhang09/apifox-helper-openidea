@@ -1,0 +1,1700 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>
+      :root {
+        color-scheme: light dark;
+        --base: #f7f8fa;
+        --surface: #fff;
+        --ink: #263247;
+        --muted: #667185;
+        --line: #dce1e8;
+        --accent: #cf3656;
+        --focus: #3374c9;
+        font:
+          12px -apple-system,
+          BlinkMacSystemFont,
+          "PingFang SC",
+          sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --base: #25282f;
+          --surface: #2c3039;
+          --ink: #e1e5ed;
+          --muted: #a2adbd;
+          --line: #434a56;
+          --accent: #fa7893;
+          --focus: #6ca8f5;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        color: var(--ink);
+        background: var(--base);
+      }
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0;
+        font-weight: 650;
+      }
+      h1 span {
+        color: var(--accent);
+      }
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+        color: inherit;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: var(--surface);
+        padding: 7px;
+        min-width: 0;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--focus);
+      }
+      button:disabled {
+        opacity: 0.5;
+        cursor: wait;
+      }
+      :focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 2px;
+      }
+      .primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      .bar {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--line);
+      }
+      .bar select {
+        flex: 1;
+      }
+      .bar input {
+        flex: 1 1 100%;
+      }
+      main {
+        padding: 0 12px 12px;
+      }
+      .hint {
+        color: var(--muted);
+        line-height: 1.6;
+        font-size: 11px;
+      }
+      .status {
+        max-height: 8rem;
+        overflow: auto;
+        padding: 9px 12px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        border-bottom: 1px solid var(--line);
+      }
+      .error {
+        color: var(--accent);
+      }
+      .list {
+        overflow-y: auto;
+        overflow-x: hidden;
+        border-bottom: 1px solid var(--line);
+        scrollbar-gutter: stable;
+      }
+      .verb {
+        font:
+          10px ui-monospace,
+          SFMono-Regular,
+          monospace;
+        color: var(--focus);
+        font-weight: 700;
+      }
+      .route {
+        font:
+          11px ui-monospace,
+          SFMono-Regular,
+          monospace;
+      }
+      nav {
+        display: flex;
+        gap: 4px;
+        margin: 12px 0;
+      }
+      nav button[aria-selected="true"] {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      pre {
+        font:
+          11px/1.6 ui-monospace,
+          SFMono-Regular,
+          monospace;
+        overflow: auto;
+        max-height: 44vh;
+        padding: 9px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        tab-size: 2;
+      }
+      details {
+        margin: 8px 0;
+      }
+      summary {
+        cursor: pointer;
+        padding: 6px 0;
+      }
+      .model {
+        font:
+          11px/1.6 ui-monospace,
+          SFMono-Regular,
+          monospace;
+        padding-left: 12px;
+        border-left: 1px solid var(--line);
+        overflow-wrap: anywhere;
+      }
+      .field {
+        margin: 4px 0;
+      }
+      .type {
+        color: var(--focus);
+      }
+      .desc {
+        color: var(--muted);
+        font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      }
+      .form {
+        display: grid;
+        gap: 9px;
+      }
+      .form label {
+        display: grid;
+        gap: 4px;
+      }
+      .form textarea {
+        min-height: 85px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        width: 100%;
+      }
+      .form input,
+      .form select {
+        width: 100%;
+      }
+      .hidden {
+        display: none !important;
+      }
+      .empty {
+        padding: 26px 0;
+        line-height: 1.8;
+        color: var(--muted);
+      }
+      .tree-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        margin: 9px 0;
+      }
+      .tree-toolbar span {
+        margin-left: auto;
+        color: var(--muted);
+      }
+      .diagnostics {
+        padding: 6px 12px;
+        margin: 0;
+        border-bottom: 1px solid var(--line);
+      }
+      .diagnostic-list {
+        max-height: 11rem;
+        overflow: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        padding: 0 0 0 18px;
+        line-height: 1.6;
+      }
+      .diagnostic-list li {
+        margin: 5px 0;
+      }
+      :root {
+        --selection: #e9eef7;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --selection: #344153;
+        }
+      }
+      .tree-toolbar {
+        flex-wrap: wrap;
+      }
+      .tree-control {
+        padding: 3px 5px;
+        border: 0;
+        background: none;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .list {
+        max-height: 46vh;
+        min-height: 130px;
+        position: relative;
+      }
+      .tree-columns,
+      .api-tree-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+        gap: 8px;
+        min-width: 0;
+        width: 100%;
+        align-items: center;
+      }
+      .tree-columns {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: var(--surface);
+        padding: 8px;
+        font-weight: 600;
+        color: var(--muted);
+        border-bottom: 1px solid var(--line);
+      }
+      .tree-columns > span + span {
+        border-left: 1px solid var(--line);
+        padding-left: 8px;
+      }
+      .api-tree-node {
+        margin: 0;
+        min-width: 0;
+        width: 100%;
+      }
+      .tree-children {
+        min-width: 0;
+        width: 100%;
+      }
+      .api-tree-row {
+        --tree-depth: 0;
+        min-height: 30px;
+        padding: 3px 8px;
+        border: 0;
+        cursor: pointer;
+      }
+      .api-tree-row:hover {
+        background: var(--selection);
+      }
+      .group-row {
+        list-style: none;
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .group-row::-webkit-details-marker {
+        display: none;
+      }
+      .tree-name {
+        display: flex;
+        align-items: flex-start;
+        gap: 6px;
+        min-width: 0;
+        max-width: 100%;
+        padding-inline-start: calc(var(--tree-depth) * 12px);
+      }
+      .tree-label,
+      .endpoint-title {
+        min-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        line-height: 1.5;
+      }
+      .tree-label {
+        flex: 0 1 auto;
+      }
+      .tree-count {
+        line-height: 1.5;
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+      .tree-chevron,
+      .tree-spacer {
+        display: inline-block;
+        flex: 0 0 10px;
+        width: 10px;
+        color: var(--muted);
+        font-size: 19px;
+        line-height: 20px;
+      }
+      .tree-chevron {
+        transition: transform 0.1s;
+      }
+      .api-tree-node[open] > .group-row .tree-chevron {
+        transform: rotate(90deg);
+      }
+      .folder-icon {
+        flex: 0 0 18px;
+        width: 18px;
+        height: 18px;
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 1.4;
+        color: var(--muted);
+      }
+      .folder-icon.module rect,
+      .folder-icon.root {
+        color: var(--focus);
+      }
+      .folder-icon.module rect {
+        fill: var(--surface);
+      }
+      .folder-icon.package circle {
+        fill: currentColor;
+        stroke: none;
+      }
+      .endpoint-title,
+      .tree-path {
+        padding: 3px 0;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        border-radius: 0;
+        min-width: 0;
+        color: inherit;
+      }
+      .endpoint-title {
+        font-size: 12px;
+        flex: 1;
+      }
+      .tree-path {
+        display: flex;
+        gap: 6px;
+        align-items: flex-start;
+        max-width: 100%;
+        line-height: 1.5;
+      }
+      .tree-path .verb {
+        flex-shrink: 0;
+        line-height: 1.65;
+      }
+      .tree-path .route {
+        min-width: 0;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        line-height: 1.5;
+      }
+      .is-active {
+        background: var(--selection);
+        box-shadow: inset 3px 0 var(--accent);
+      }
+      .is-active .endpoint-title {
+        font-weight: 600;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .tree-chevron {
+          transition: none;
+        }
+      }
+      .context-menu {
+        position: fixed;
+        z-index: 20;
+        min-width: 220px;
+        max-width: calc(100vw - 8px);
+        padding: 5px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        box-shadow: 0 8px 24px #0003;
+      }
+      .context-menu button {
+        display: block;
+        width: 100%;
+        text-align: left;
+        border: 0;
+        background: transparent;
+        padding: 9px 12px;
+      }
+      .context-menu button:hover,
+      .context-menu button:focus-visible {
+        background: var(--selection);
+      }
+      .context-label {
+        font-size: 11px;
+        color: var(--muted);
+        padding: 5px 12px 7px;
+        max-width: 310px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 3px;
+      }
+      .tree-help {
+        display: block;
+        margin: 0;
+        padding: 9px 0 2px;
+        line-height: 1.6;
+        overflow-wrap: anywhere;
+      }
+      .scan-bar {
+        flex-wrap: nowrap;
+        align-items: center;
+      }
+      .scan-bar input {
+        flex: 1 1 auto;
+        width: 0;
+      }
+      .scan-bar button {
+        flex: 0 0 auto;
+      }
+      .project-field {
+        position: relative;
+        display: grid;
+        gap: 5px;
+        min-width: 0;
+      }
+      .project-trigger {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        width: 100%;
+        text-align: left;
+        padding: 9px 11px;
+      }
+      .project-current,
+      .project-option-labels {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+        flex: 1;
+      }
+      .project-current > span,
+      .project-option-labels > span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .project-meta {
+        font-size: 11px;
+        color: var(--muted);
+        font-weight: 400;
+      }
+      .project-arrow {
+        color: var(--muted);
+        flex: 0 0 auto;
+      }
+      .project-trigger[aria-expanded="true"] {
+        border-color: var(--focus);
+      }
+      .project-picker {
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: 100%;
+        margin-top: 4px;
+        z-index: 12;
+        padding: 7px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 5px;
+        box-shadow: 0 8px 24px #0003;
+      }
+      .project-options {
+        max-height: 230px;
+        overflow: auto;
+        margin-top: 5px;
+      }
+      .project-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        width: 100%;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        padding: 8px;
+        border-radius: 3px;
+      }
+      .project-option.is-highlighted,
+      .project-option:hover {
+        background: var(--selection);
+      }
+      .project-option-name {
+        font-weight: 500;
+      }
+      .project-check {
+        width: 14px;
+        flex: 0 0 14px;
+        color: var(--accent);
+      }
+      .project-picker #project-list-status {
+        font-size: 11px;
+        margin: 5px 7px;
+      }
+      .project-picker-footer {
+        display: flex;
+        justify-content: space-between;
+        padding-top: 5px;
+        border-top: 1px solid var(--line);
+      }
+      .project-picker-footer button {
+        border: 0;
+        background: transparent;
+        color: var(--muted);
+        padding: 5px;
+      }
+      .project-manual {
+        display: flex;
+        align-items: flex-end;
+        gap: 6px;
+        padding-top: 5px;
+      }
+      .project-manual label {
+        flex: 1;
+        min-width: 0;
+      }
+      .project-manual button {
+        flex: 0 0 auto;
+      }
+      .project-field #project-change-status {
+        margin: 2px 0;
+        font-size: 11px;
+      }
+      @media (max-width: 480px) {
+        .endpoint-row {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 1px;
+          padding-top: 5px;
+          padding-bottom: 5px;
+        }
+        .endpoint-row .tree-path {
+          padding-inline-start: calc(var(--tree-depth) * 12px + 16px);
+          padding-bottom: 3px;
+        }
+        .tree-columns {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .tree-columns > span:nth-child(2) {
+          display: none;
+        }
+        .tree-columns > span:first-child::after {
+          content: " / 路径";
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span>Apifox</span> Helper</h1>
+      <button id="settings-toggle" aria-expanded="false">项目配置</button>
+    </header>
+    <div id="settings" class="hidden" style="padding: 12px">
+      <div class="form">
+        <p id="config-project" class="hint">
+          配置按当前本地项目保存，保存后下次自动载入。
+        </p>
+        <div class="project-field" id="project-field">
+          <span id="project-field-label">同步项目</span>
+          <button
+            id="project-trigger"
+            class="project-trigger"
+            type="button"
+            aria-labelledby="project-field-label project-name project-meta"
+            aria-haspopup="dialog"
+            aria-expanded="false"
+            aria-controls="project-picker"
+          >
+            <span class="project-current"
+              ><span id="project-name">选择 Apifox 项目</span
+              ><span id="project-meta" class="project-meta"
+                >点击选择</span
+              ></span
+            ><span aria-hidden="true" class="project-arrow">⌄</span>
+          </button>
+          <div
+            id="project-picker"
+            class="hidden project-picker"
+            role="dialog"
+            aria-label="选择同步项目"
+          >
+            <input
+              id="project-filter"
+              role="combobox"
+              aria-label="搜索项目"
+              aria-autocomplete="list"
+              aria-expanded="true"
+              aria-controls="project-choice"
+              placeholder="搜索项目、团队或 ID"
+              autocomplete="off"
+            />
+            <div
+              id="project-choice"
+              class="project-options"
+              role="listbox"
+              aria-label="可用项目"
+            ></div>
+            <p id="project-list-status" class="hint" role="status"></p>
+            <div class="project-picker-footer">
+              <button id="load-projects" type="button">刷新列表</button
+              ><button id="project-manual-toggle" type="button">
+                手动填写 ID
+              </button>
+            </div>
+          </div>
+          <div id="project-manual" class="hidden project-manual">
+            <label
+              >项目 ID<input
+                id="project_id"
+                inputmode="numeric"
+                placeholder="输入项目 ID" /></label
+            ><button id="project-manual-done" type="button">完成</button>
+          </div>
+          <p id="project-change-status" class="hint hidden" role="status"></p>
+        </div>
+        <label
+          >接口目录 ID（留空为根目录）<input
+            id="endpoint_folder"
+            inputmode="numeric" /></label
+        ><label
+          >模型目录 ID（留空为根目录）<input
+            id="schema_folder"
+            inputmode="numeric" /></label
+        ><label
+          >分支 ID（留空为主分支）<input
+            id="branch"
+            inputmode="numeric" /></label
+        ><label
+          >模块 ID（留空为默认模块）<input
+            id="module"
+            inputmode="numeric" /></label
+        ><label
+          >已有文档的处理<select id="overwrite">
+            <option value="AUTO_MERGE">自动合并</option>
+            <option value="OVERWRITE_EXISTING">覆盖</option>
+            <option value="KEEP_EXISTING">保留已有文档</option>
+            <option value="CREATE_NEW">创建新文档</option>
+          </select></label
+        ><label>文档标题<input id="title" /></label
+        ><label
+          >调试服务地址<input id="base_url" placeholder="http://localhost:8080"
+        /></label>
+        <p id="token" class="hint"></p>
+        <button id="save-config">保存项目配置</button>
+      </div>
+    </div>
+    <div class="bar scan-bar">
+      <input
+        id="search"
+        aria-label="筛选接口"
+        placeholder="搜索模块、包、Controller、接口名称或路径"
+      /><button id="scan" title="扫描整个项目的业务源码">扫描接口</button>
+    </div>
+    <div id="status" class="status" role="status">
+      点击扫描接口，读取整个项目的业务源码（排除测试源码）。
+    </div>
+    <details id="diagnostics" class="diagnostics hidden">
+      <summary id="diagnostic-summary"></summary>
+      <ul id="diagnostic-list" class="diagnostic-list"></ul>
+    </details>
+    <main>
+      <div class="tree-toolbar">
+        <button id="expand-all" class="tree-control" title="展开所有节点">
+          展开全部</button
+        ><button id="collapse-all" class="tree-control" title="折叠到模块">
+          折叠全部</button
+        ><span id="count">0 个接口</span>
+      </div>
+      <div id="list" class="list">
+        <div class="empty">
+          从源码生成接口文档，先预览响应模型，再同步到 Apifox。
+        </div>
+      </div>
+      <p class="hint tree-help">
+        右键文件夹或接口上传、导出；双击接口跳转源码。
+      </p>
+      <nav aria-label="接口详情">
+        <button data-tab="model" aria-selected="true">响应模型</button
+        ><button data-tab="spec" aria-selected="false">OpenAPI</button
+        ><button data-tab="debug" aria-selected="false">调试</button>
+      </nav>
+      <section id="model">
+        <p class="hint">选择接口查看响应结构。循环引用保留为模型引用。</p>
+      </section>
+      <section id="spec" class="hidden"><pre id="json"></pre></section>
+      <section id="debug" class="hidden">
+        <div class="form">
+          <label
+            >HTTP 方法<select id="method">
+              <option>GET</option>
+              <option>POST</option>
+              <option>PUT</option>
+              <option>PATCH</option>
+              <option>DELETE</option>
+              <option>HEAD</option>
+              <option>OPTIONS</option>
+            </select></label
+          ><label
+            >请求 URL<input id="url" placeholder="替换路径参数后发送" /></label
+          ><label
+            >请求头（JSON 键值对象）<textarea id="headers">{}</textarea></label
+          ><label>请求体<textarea id="body"></textarea></label
+          ><button id="send">发送请求</button>
+        </div>
+        <pre id="response">尚未发送请求</pre>
+      </section>
+    </main>
+    <div
+      id="context-menu"
+      class="context-menu hidden"
+      role="menu"
+      aria-label="接口操作"
+    >
+      <div id="context-label" class="context-label"></div>
+      <button role="menuitem" data-action="upload">上传到 Apifox</button>
+      <button role="menuitem" data-action="yaml">导出 OpenAPI (YAML)</button>
+      <button role="menuitem" data-action="json">导出 OpenAPI (JSON)</button>
+    </div>
+    <script>
+      "use strict";
+      const INITIAL = "__APIFOX_CONFIG__";
+      const $ = (id) => document.getElementById(id);
+      let remoteProjects = [],
+        filteredProjects = [],
+        projectsLoaded = false,
+        projectListMessage = "",
+        pickerActive = -1,
+        pendingAction = null,
+        configDirty = false,
+        result = null,
+        activeKey = null,
+        menuTarget = null,
+        menuAnchor = null,
+        config = {},
+        busy = false,
+        expanded = new Set(["root"]),
+        treeSearch = "";
+      const text = (tag, value, cls) => {
+        const n = document.createElement(tag);
+        n.textContent = value;
+        if (cls) n.className = cls;
+        return n;
+      };
+      function status(s, error = false) {
+        $("status").textContent = s;
+        $("status").classList.toggle("error", error);
+      }
+      function diagnostics(value) {
+        const warnings = value.warnings || [],
+          notices = value.notices || [],
+          box = $("diagnostics"),
+          list = $("diagnostic-list");
+        box.open = false;
+        box.classList.toggle("hidden", !warnings.length && !notices.length);
+        $("diagnostic-summary").textContent = [
+          warnings.length ? `${warnings.length} 条错误（需修复后同步）` : "",
+          notices.length ? `${notices.length} 条结构提示` : "",
+        ]
+          .filter(Boolean)
+          .join("，");
+        list.replaceChildren();
+        for (const w of warnings) list.append(text("li", w, "error"));
+        for (const n of notices) list.append(text("li", n, "hint"));
+      }
+      function lock(value) {
+        busy = value;
+        if (value) closeMenu(false);
+        for (const id of ["scan", "send", "save-config", "load-projects"])
+          $(id).disabled = value;
+      }
+      function send(v) {
+        if (busy) return;
+        if (v.op !== "list-projects") closeProjectPicker();
+        pendingAction = v.op;
+        lock(true);
+        openidea.postMessage(JSON.stringify(v));
+      }
+      // 以源码身份构造分组，显示名称相同的 Controller 也不会合并。
+      function endpointIdentity(e) {
+        const file = (e.file || "").replaceAll("\\", "/");
+        const source = file.lastIndexOf("/src/");
+        const modulePath =
+          e.module_path ?? (source < 0 ? "" : file.slice(0, source));
+        const module = e.module || modulePath.split("/").pop() || "项目";
+        const packageName =
+          e.package ??
+          (file
+            .split(/\/src\/(?:main|test)\/(?:java|kotlin)\//)[1]
+            ?.split("/")
+            .slice(0, -1)
+            .join(".") ||
+            "");
+        const controller =
+          e.controller ||
+          e.handler?.split(".").slice(0, -1).join(".") ||
+          file
+            .split("/")
+            .pop()
+            ?.replace(/\.(java|kt)$/, "") ||
+          "Controller";
+        return {
+          modulePath,
+          module,
+          packageName,
+          controller,
+          controllerName:
+            e.controller_name || e.operation.tags?.[0] || controller,
+        };
+      }
+      function node(key, label, kind) {
+        return { key, label, kind, indices: [], children: new Map() };
+      }
+      function buildTree() {
+        const root = node("root", "接口数", "root");
+        result.endpoints.forEach((e, index) => {
+          const identity = endpointIdentity(e);
+          let parent = root;
+          parent.indices.push(index);
+          const groups = [
+            ["module", identity.modulePath || identity.module, identity.module],
+          ];
+          let prefix = "";
+          for (const part of identity.packageName
+            ? identity.packageName.split(".")
+            : ["（默认包）"]) {
+            prefix = prefix ? prefix + "." + part : part;
+            groups.push(["package", prefix, part]);
+          }
+          groups.push([
+            "controller",
+            identity.packageName + "#" + identity.controller,
+            identity.controllerName,
+          ]);
+          for (const [kind, id, label] of groups) {
+            const key = parent.key + "/" + kind + ":" + id;
+            if (!parent.children.has(key))
+              parent.children.set(key, node(key, label, kind));
+            parent = parent.children.get(key);
+            parent.indices.push(index);
+          }
+          const key = "endpoint:" + (e.operation.operationId || index);
+          const leaf = node(key, e.operation.summary || e.handler, "endpoint");
+          leaf.index = index;
+          leaf.indices = [index];
+          parent.children.set(key, leaf);
+        });
+        function compress(parent) {
+          for (const [key, child] of parent.children) {
+            let compact = child;
+            while (compact.kind === "package" && compact.children.size === 1) {
+              const only = [...compact.children.values()][0];
+              if (only.kind !== "package") break;
+              compact = { ...only, label: compact.label + "." + only.label };
+            }
+            compress(compact);
+            parent.children.set(key, compact);
+          }
+          if (parent.kind !== "controller")
+            parent.children = new Map(
+              [...parent.children].sort(([, a], [, b]) =>
+                a.label.localeCompare(b.label, "en", { numeric: true }),
+              ),
+            );
+          return parent;
+        }
+        return compress(root);
+      }
+      function matches(e, search) {
+        const id = endpointIdentity(e);
+        return `${id.module} ${id.modulePath} ${id.packageName} ${id.controller} ${id.controllerName} ${e.method} ${e.path} ${e.operation.summary} ${e.handler}`
+          .toLowerCase()
+          .includes(search);
+      }
+      function filterTree(root, search) {
+        const visible = root.indices.filter((i) =>
+          matches(result.endpoints[i], search),
+        );
+        if (!visible.length) return null;
+        return {
+          ...root,
+          visible,
+          children: new Map(
+            [...root.children]
+              .map(([k, n]) => [k, filterTree(n, search)])
+              .filter(([, n]) => n),
+          ),
+        };
+      }
+      function folderIcon(kind) {
+        const ns = "http://www.w3.org/2000/svg",
+          svg = document.createElementNS(ns, "svg");
+        svg.setAttribute("viewBox", "0 0 20 20");
+        svg.setAttribute("aria-hidden", "true");
+        svg.classList.add("folder-icon", kind);
+        const outline = document.createElementNS(ns, "path");
+        outline.setAttribute(
+          "d",
+          "M2 5a1 1 0 0 1 1-1h5l2 2h7a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z",
+        );
+        svg.append(outline);
+        if (kind === "module") {
+          const badge = document.createElementNS(ns, "rect");
+          for (const [k, v] of Object.entries({
+            x: 12,
+            y: 12,
+            width: 7,
+            height: 6,
+            rx: 1,
+          }))
+            badge.setAttribute(k, v);
+          svg.append(badge);
+        } else if (kind === "package") {
+          const dot = document.createElementNS(ns, "circle");
+          dot.setAttribute("cx", "8");
+          dot.setAttribute("cy", "11");
+          dot.setAttribute("r", "1.5");
+          svg.append(dot);
+        }
+        return svg;
+      }
+      function activateNode(key) {
+        activeKey = key;
+        for (const row of $("list").querySelectorAll("[data-row-key]"))
+          row.classList.toggle("is-active", row.dataset.rowKey === key);
+      }
+      function closeMenu(restoreFocus = false) {
+        $("context-menu").classList.add("hidden");
+        menuTarget = null;
+        if (restoreFocus && menuAnchor?.isConnected)
+          menuAnchor.focus({ preventScroll: true });
+        menuAnchor = null;
+      }
+      function openMenu(n, anchor, event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (busy || !result) return;
+        closeMenu();
+        activateNode(n.key);
+        menuAnchor = anchor;
+        // 右键文件夹始终作用于其全部接口；搜索仅改变可见结果。
+        menuTarget = n.indices.map(
+          (i) => result.endpoints[i].operation.operationId,
+        );
+        const menu = $("context-menu");
+        menu.setAttribute(
+          "aria-label",
+          `${n.label}，${menuTarget.length} 个接口`,
+        );
+        $("context-label").textContent =
+          `${n.label}（${menuTarget.length} 个接口）`;
+        menu.classList.remove("hidden");
+        const rect = anchor.getBoundingClientRect(),
+          keyboard = event.type === "keydown";
+        const x = keyboard ? rect.left + 16 : event.clientX,
+          y = keyboard ? rect.bottom : event.clientY;
+        menu.style.left =
+          Math.max(4, Math.min(x, window.innerWidth - menu.offsetWidth - 4)) +
+          "px";
+        menu.style.top =
+          Math.max(4, Math.min(y, window.innerHeight - menu.offsetHeight - 4)) +
+          "px";
+        menu.querySelector('[role="menuitem"]').focus({ preventScroll: true });
+      }
+      function nodeEvents(row, n) {
+        row.dataset.rowKey = n.key;
+        if (row.tagName !== "SUMMARY") row.tabIndex = -1;
+        row.setAttribute("aria-haspopup", "menu");
+        row.oncontextmenu = (e) => openMenu(n, row, e);
+        row.addEventListener("keydown", (e) => {
+          if (e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))
+            openMenu(n, row, e);
+        });
+      }
+      for (const item of $("context-menu").querySelectorAll(
+        '[role="menuitem"]',
+      ))
+        item.onclick = () => {
+          if (!menuTarget || busy) return;
+          const ids = [...menuTarget],
+            action = item.dataset.action;
+          closeMenu(true);
+          send({
+            op: action === "upload" ? "upload" : "export",
+            scope: "project",
+            selected: ids,
+            ...(action === "upload" ? {} : { format: action }),
+          });
+        };
+      $("context-menu").onkeydown = (e) => {
+        const items = [
+            ...$("context-menu").querySelectorAll('[role="menuitem"]'),
+          ],
+          current = items.indexOf(document.activeElement);
+        if (e.key === "Escape" || e.key === "Tab") {
+          e.preventDefault();
+          closeMenu(true);
+          return;
+        }
+        if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+          e.preventDefault();
+          const index =
+            e.key === "Home"
+              ? 0
+              : e.key === "End"
+                ? items.length - 1
+                : (current + (e.key === "ArrowDown" ? 1 : -1) + items.length) %
+                  items.length;
+          items[index].focus();
+        }
+      };
+      document.addEventListener("pointerdown", (e) => {
+        if (!$("context-menu").contains(e.target)) closeMenu();
+      });
+      window.addEventListener("resize", () => closeMenu());
+      document.addEventListener("scroll", () => closeMenu(), true);
+      function renderNode(n, depth, search) {
+        if (n.kind === "endpoint") {
+          const e = result.endpoints[n.index],
+            row = text("div", "", "api-tree-row endpoint-row");
+          row.dataset.endpoint = n.index;
+          row.style.setProperty("--tree-depth", Math.min(depth, 5));
+          row.classList.toggle("is-active", activeKey === n.key);
+          nodeEvents(row, n);
+          row.onclick = () => show(n.index);
+          row.ondblclick = (e) => {
+            e.preventDefault();
+            closeMenu();
+            send({
+              op: "navigate",
+              operationId: result.endpoints[n.index].operation.operationId,
+            });
+          };
+          const name = text("div", "", "tree-name");
+          const button = text(
+            "button",
+            e.operation.summary || e.handler,
+            "endpoint-title",
+          );
+          button.title = `${e.operation.summary || e.handler}\n${e.handler}`;
+          button.setAttribute(
+            "aria-label",
+            `预览 ${e.method} ${e.path} ${e.operation.summary || e.handler}`,
+          );
+          button.onclick = () => show(n.index);
+          name.append(text("span", "", "tree-spacer"), button);
+          const path = text("button", "", "tree-path");
+          path.title = `${e.method} ${e.path}`;
+          path.append(
+            text("span", e.method, "verb"),
+            text("span", e.path, "route"),
+          );
+          path.onclick = () => show(n.index);
+          row.append(name, path);
+          return row;
+        }
+        const details = document.createElement("details");
+        details.className = "api-tree-node";
+        details.dataset.nodeKey = n.key;
+        details.open = search ? true : expanded.has(n.key);
+        const summary = document.createElement("summary");
+        summary.className = "api-tree-row group-row";
+        summary.style.setProperty("--tree-depth", Math.min(depth, 5));
+        summary.classList.toggle("is-active", activeKey === n.key);
+        nodeEvents(summary, n);
+        summary.onclick = () => activateNode(n.key);
+        const name = text("span", "", "tree-name");
+        const chevron = text("span", "›", "tree-chevron");
+        chevron.setAttribute("aria-hidden", "true");
+        name.append(
+          chevron,
+          folderIcon(n.kind),
+          text("span", n.label, "tree-label"),
+          text(
+            "span",
+            search && n.visible.length !== n.indices.length
+              ? `(${n.visible.length}/${n.indices.length})`
+              : `(${n.indices.length})`,
+            "tree-count",
+          ),
+        );
+        name.title = n.label;
+        summary.append(name);
+        summary.setAttribute(
+          "aria-label",
+          `${n.label}，${n.visible.length} 个接口`,
+        );
+        details.append(summary);
+        const children = text("div", "", "tree-children");
+        for (const child of n.children.values())
+          children.append(renderNode(child, depth + 1, search));
+        details.append(children);
+        return details;
+      }
+      function rememberExpansion() {
+        if (treeSearch) return;
+        for (const item of $("list").querySelectorAll(".api-tree-node")) {
+          if (item.open) expanded.add(item.dataset.nodeKey);
+          else expanded.delete(item.dataset.nodeKey);
+        }
+      }
+      function viewList(remember = true) {
+        closeMenu();
+        const list = $("list"),
+          scrollTop = list.scrollTop,
+          scrollLeft = list.scrollLeft,
+          search = $("search").value.trim().toLowerCase();
+        if (remember) rememberExpansion();
+        const changed = treeSearch !== search;
+        treeSearch = search;
+        list.replaceChildren();
+        if (!result) return;
+        const header = text("div", "", "tree-columns");
+        header.append(text("span", "名称"), text("span", "路径"));
+        list.append(header);
+        const root = filterTree(buildTree(), search);
+        if (root) list.append(renderNode(root, 0, search));
+        else
+          list.append(text("div", "没有匹配的接口，请调整搜索条件。", "empty"));
+        counts(root?.visible.length || 0);
+        list.scrollTop = changed ? 0 : scrollTop;
+        list.scrollLeft = scrollLeft;
+      }
+      function counts(matched) {
+        const count = result?.endpoints.length || 0;
+        $("count").textContent =
+          `${count} 个接口` + (treeSearch ? `，匹配 ${matched ?? 0}` : "");
+      }
+      $("expand-all").onclick = () => {
+        if (!result) return;
+        const visit = (n) => {
+          if (n.kind !== "endpoint") expanded.add(n.key);
+          for (const child of n.children.values()) visit(child);
+        };
+        visit(buildTree());
+        viewList(false);
+      };
+      $("collapse-all").onclick = () => {
+        expanded = new Set(["root"]);
+        $("search").value = "";
+        viewList(false);
+      };
+      function deref(s) {
+        const r = s?.$ref;
+        return r?.startsWith("#/")
+          ? r
+              .slice(2)
+              .split("/")
+              .reduce(
+                (o, k) => o?.[k.replace(/~1/g, "/").replace(/~0/g, "~")],
+                result.document,
+              )
+          : s;
+      }
+      function tree(schema, parent, seen = new Set(), depth = 0) {
+        if (!schema || depth > 20) {
+          parent.append(text("span", "展开达到上限", "hint"));
+          return;
+        }
+        const r = schema.$ref;
+        if (r) {
+          if (seen.has(r)) {
+            parent.append(text("span", "↻ " + r.split("/").pop(), "type"));
+            return;
+          }
+          seen = new Set(seen);
+          seen.add(r);
+          schema = deref(schema);
+          if (!schema) {
+            parent.append(text("span", "模型引用缺失", "error"));
+            return;
+          }
+        }
+        if (!Object.keys(schema).length) {
+          parent.append(text("span", "任意 JSON 值", "type"));
+          return;
+        }
+        if (schema.allOf) {
+          for (const s of schema.allOf) tree(s, parent, seen, depth + 1);
+          return;
+        }
+        if (schema.properties) {
+          for (const [name, s] of Object.entries(schema.properties)) {
+            const details = document.createElement("details");
+            details.open = depth < 3;
+            const summary = document.createElement("summary");
+            summary.append(
+              text(
+                "strong",
+                name + (schema.required?.includes(name) ? " *" : ""),
+              ),
+              text("span", "  " + (s.type || "object"), "type"),
+            );
+            details.append(summary);
+            if (s.description) details.append(text("p", s.description, "desc"));
+            const nested = text("div", "", "model");
+            tree(s, nested, seen, depth + 1);
+            details.append(nested);
+            parent.append(details);
+          }
+        } else if (schema.items) {
+          parent.append(text("div", "array →", "type"));
+          tree(schema.items, parent, seen, depth + 1);
+        } else if (
+          schema.additionalProperties &&
+          typeof schema.additionalProperties === "object"
+        ) {
+          parent.append(text("div", "map →", "type"));
+          tree(schema.additionalProperties, parent, seen, depth + 1);
+        } else {
+          parent.append(
+            text(
+              "span",
+              schema.enum
+                ? schema.enum.join(" | ")
+                : (schema.type || "object") +
+                    (schema.format ? " (" + schema.format + ")" : ""),
+              "type",
+            ),
+          );
+        }
+        if (schema["x-apifox-unresolved"])
+          parent.append(text("p", schema.description, "error"));
+      }
+      function example(schema, seen = new Set(), depth = 0) {
+        if (!schema || depth > 12) return null;
+        if (schema.example !== undefined) return schema.example;
+        if (schema.default !== undefined) return schema.default;
+        if (schema.$ref) {
+          if (seen.has(schema.$ref)) return null;
+          seen = new Set(seen);
+          seen.add(schema.$ref);
+          return example(deref(schema), seen, depth + 1);
+        }
+        if (schema.allOf)
+          return Object.assign(
+            {},
+            ...schema.allOf.map((s) => example(s, seen, depth + 1) || {}),
+          );
+        if (schema.enum) return schema.enum[0];
+        if (schema.properties)
+          return Object.fromEntries(
+            Object.entries(schema.properties)
+              .filter(([, s]) => !s.readOnly)
+              .map(([k, s]) => [k, example(s, seen, depth + 1)]),
+          );
+        if (schema.items) return [example(schema.items, seen, depth + 1)];
+        return (
+          { string: "", integer: 0, number: 0, boolean: false, object: {} }[
+            schema.type
+          ] ?? null
+        );
+      }
+      function show(i) {
+        activateNode("endpoint:" + result.endpoints[i].operation.operationId);
+        const e = result.endpoints[i];
+        $("json").textContent = JSON.stringify(e.operation, null, 2);
+        const model = $("model");
+        model.replaceChildren();
+        for (const [code, response] of Object.entries(e.operation.responses)) {
+          model.append(text("h3", code + " " + response.description));
+          for (const [media, c] of Object.entries(response.content || {})) {
+            model.append(text("p", media, "hint"));
+            const n = text("div", "", "model");
+            tree(c.schema, n);
+            model.append(n);
+          }
+        }
+        $("method").value = e.method;
+        let path = e.path;
+        const headers = {};
+        for (const p of e.operation.parameters || []) {
+          const value = p.schema?.default ?? p.schema?.example ?? "";
+          if (p.in === "header") headers[p.name] = value;
+          if (p.in === "query")
+            path +=
+              (path.includes("?") ? "&" : "?") +
+              encodeURIComponent(p.name) +
+              "=" +
+              encodeURIComponent(value);
+        }
+        $("url").value =
+          (config.base_url || "http://localhost:8080").replace(/\/$/, "") +
+          path;
+        const content = e.operation.requestBody?.content;
+        const media = content ? Object.keys(content)[0] : null;
+        if (media) {
+          headers["Content-Type"] = media;
+          $("body").value = media.includes("json")
+            ? JSON.stringify(example(content[media].schema), null, 2)
+            : "";
+        } else $("body").value = "";
+        $("headers").value = JSON.stringify(headers, null, 2);
+      }
+      $("settings-toggle").onclick = () => {
+        const hidden = $("settings").classList.toggle("hidden");
+        if (hidden) closeProjectPicker();
+        $("settings-toggle").setAttribute("aria-expanded", String(!hidden));
+        if (!hidden && !configDirty) send({ op: "init" });
+      };
+      for (const field of $("settings").querySelectorAll("input,select")) {
+        if (field.id === "project-filter") continue;
+        field.addEventListener("input", () => (configDirty = true));
+        field.addEventListener("change", () => (configDirty = true));
+      }
+      function applyConfig(v) {
+        config = v.config;
+        configDirty = false;
+        for (const [k, val] of Object.entries(config)) {
+          if ($(k)) $(k).value = val ?? "";
+        }
+        $("token").textContent = v.tokenSet
+          ? "Apifox 访问令牌已设置。"
+          : "请在 Settings → Plugins → Apifox Helper → Secrets 中设置 Apifox Access Token。";
+        const root = v.projectRoot || "";
+        const label = root
+          .replaceAll("\\", "/")
+          .split("/")
+          .filter(Boolean)
+          .pop();
+        $("config-project").textContent = label ? "本地项目：" + label : "";
+        $("config-project").title = root;
+        $("project-change-status").classList.add("hidden");
+        projectCaption();
+        renderProjects();
+        if (v.message) status(v.message);
+        if (
+          !$("project-picker").classList.contains("hidden") &&
+          !projectsLoaded &&
+          !busy
+        )
+          refreshProjects();
+      }
+      $("save-config").onclick = () => {
+        const next = {};
+        for (const k of ["project_id", "title", "base_url", "overwrite"])
+          next[k] = $(k).value.trim();
+        for (const k of [
+          "endpoint_folder",
+          "schema_folder",
+          "branch",
+          "module",
+        ]) {
+          const s = $(k).value.trim();
+          if (s && !/^\d+$/.test(s)) {
+            status("目录、分支和模块 ID 必须是数字", true);
+            return;
+          }
+          next[k] = s ? Number(s) : null;
+        }
+        const chosen = remoteProjects.find((p) => p.id === next.project_id);
+        next.project_name =
+          chosen?.name ||
+          (config.project_id === next.project_id
+            ? config.project_name || ""
+            : "");
+        next.team_name =
+          chosen?.team_name ||
+          (config.project_id === next.project_id ? config.team_name || "" : "");
+        send({ op: "save-config", config: next });
+      };
+      function projectCaption() {
+        const id = $("project_id").value.trim(),
+          project = remoteProjects.find((p) => p.id === id);
+        const name =
+          project?.name ||
+          (config.project_id === id ? config.project_name : "");
+        const team =
+          project?.team_name ||
+          (config.project_id === id ? config.team_name : "");
+        $("project-name").textContent =
+          name || (id ? "项目 " + id : "选择 Apifox 项目");
+        $("project-meta").textContent = id
+          ? [team, "ID " + id].filter(Boolean).join(" · ")
+          : "点击选择";
+        $("project-trigger").title = [name, team, id ? "ID " + id : ""]
+          .filter(Boolean)
+          .join(" / ");
+      }
+      function highlightProject(index) {
+        if (!filteredProjects.length) {
+          pickerActive = -1;
+          $("project-filter").removeAttribute("aria-activedescendant");
+          return;
+        }
+        pickerActive =
+          (index + filteredProjects.length) % filteredProjects.length;
+        for (const option of $("project-choice").querySelectorAll(
+          '[role="option"]',
+        ))
+          option.classList.toggle(
+            "is-highlighted",
+            Number(option.dataset.index) === pickerActive,
+          );
+        const active = $("project-choice").querySelector(
+          `[data-index="${pickerActive}"]`,
+        );
+        $("project-filter").setAttribute("aria-activedescendant", active.id);
+        if (
+          !$("project-picker").classList.contains("hidden") &&
+          active.scrollIntoView
+        )
+          active.scrollIntoView({ block: "nearest" });
+      }
+      function renderProjects() {
+        const list = $("project-choice"),
+          query = $("project-filter").value.trim().toLowerCase(),
+          id = $("project_id").value.trim();
+        list.replaceChildren();
+        filteredProjects = remoteProjects.filter(
+          (p) =>
+            !query ||
+            `${p.name} ${p.team_name} ${p.id}`.toLowerCase().includes(query),
+        );
+        for (const [index, project] of filteredProjects.entries()) {
+          const option = text("button", "", "project-option");
+          option.type = "button";
+          option.id = "project-option-" + project.id;
+          option.dataset.index = index;
+          option.dataset.projectId = project.id;
+          option.tabIndex = -1;
+          option.disabled = pendingAction === "list-projects";
+          option.setAttribute("role", "option");
+          option.setAttribute("aria-selected", String(project.id === id));
+          const labels = text("span", "", "project-option-labels");
+          labels.append(
+            text("span", project.name, "project-option-name"),
+            text(
+              "span",
+              `${project.team_name} · ID ${project.id}`,
+              "project-meta",
+            ),
+          );
+          const mark = text(
+            "span",
+            project.id === id ? "✓" : "",
+            "project-check",
+          );
+          mark.setAttribute("aria-hidden", "true");
+          option.append(labels, mark);
+          option.title = `${project.team_name} / ${project.name}（${project.id}）`;
+          option.onclick = () => chooseProject(project);
+          list.append(option);
+        }
+        if (pendingAction === "list-projects")
+          $("project-list-status").textContent = "正在加载项目…";
+        else if (projectListMessage)
+          $("project-list-status").textContent = projectListMessage;
+        else if (!projectsLoaded)
+          $("project-list-status").textContent =
+            "点开时自动加载项目，也可手动填写 ID。";
+        else if (!remoteProjects.length)
+          $("project-list-status").textContent =
+            "当前账号没有可用的 API 项目，可刷新或手动填写 ID。";
+        else
+          $("project-list-status").textContent = filteredProjects.length
+            ? `${filteredProjects.length} 个项目`
+            : "没有匹配项目，请换个关键词。";
+        highlightProject(
+          Math.max(
+            0,
+            filteredProjects.findIndex((p) => p.id === id),
+          ),
+        );
+      }
+      function closeProjectPicker(restoreFocus = false) {
+        $("project-picker").classList.add("hidden");
+        $("project-trigger").setAttribute("aria-expanded", "false");
+        if (restoreFocus) $("project-trigger").focus({ preventScroll: true });
+      }
+      function openProjectPicker() {
+        $("project-manual").classList.add("hidden");
+        $("project-filter").value = "";
+        $("project-picker").classList.remove("hidden");
+        $("project-trigger").setAttribute("aria-expanded", "true");
+        renderProjects();
+        $("project-filter").focus({ preventScroll: true });
+        if (!projectsLoaded && pendingAction !== "list-projects")
+          refreshProjects();
+      }
+      function refreshProjects() {
+        if (busy) return;
+        projectListMessage = "";
+        send({ op: "list-projects" });
+        renderProjects();
+      }
+      function chooseProject(project) {
+        if (busy) return;
+        const changed = $("project_id").value.trim() !== project.id;
+        $("project_id").value = project.id;
+        if (changed) {
+          for (const key of [
+            "endpoint_folder",
+            "schema_folder",
+            "branch",
+            "module",
+          ])
+            $(key).value = "";
+        }
+        configDirty =
+          configDirty ||
+          changed ||
+          project.name !== config.project_name ||
+          project.team_name !== config.team_name;
+        $("project-change-status").textContent = changed
+          ? "同步项目已更改，保存后生效。目录、分支和模块设置已清空。"
+          : "项目选择已更新，保存后生效。";
+        $("project-change-status").classList.toggle("hidden", !configDirty);
+        projectCaption();
+        closeProjectPicker(true);
+      }
+      $("project-trigger").onclick = () => {
+        $("project-picker").classList.contains("hidden")
+          ? openProjectPicker()
+          : closeProjectPicker(true);
+      };
+      $("load-projects").onclick = () => refreshProjects();
+      $("project-filter").oninput = () => renderProjects();
+      $("project-filter").onkeydown = (e) => {
+        if (["ArrowDown", "ArrowUp", "Home", "End", "Enter"].includes(e.key)) {
+          e.preventDefault();
+          if (e.key === "Enter") {
+            if (filteredProjects[pickerActive])
+              chooseProject(filteredProjects[pickerActive]);
+          } else
+            highlightProject(
+              e.key === "Home"
+                ? 0
+                : e.key === "End"
+                  ? filteredProjects.length - 1
+                  : pickerActive + (e.key === "ArrowDown" ? 1 : -1),
+            );
+        }
+      };
+      $("project-field").addEventListener("keydown", (e) => {
+        if (
+          e.key === "Escape" &&
+          !$("project-picker").classList.contains("hidden")
+        ) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeProjectPicker(true);
+        }
+      });
+      document.addEventListener("pointerdown", (e) => {
+        if (!$("project-field").contains(e.target)) closeProjectPicker();
+      });
+      $("project-field").addEventListener("focusout", (e) => {
+        if (e.relatedTarget && !$("project-field").contains(e.relatedTarget))
+          closeProjectPicker();
+      });
+      $("project-manual-toggle").onclick = () => {
+        closeProjectPicker();
+        $("project-manual").classList.remove("hidden");
+        $("project_id").focus();
+        $("project_id").select();
+      };
+      $("project-manual-done").onclick = () => {
+        const id = $("project_id").value.trim();
+        if (!/^\d+$/.test(id)) {
+          status("请输入有效的数字项目 ID", true);
+          $("project_id").focus();
+          return;
+        }
+        $("project-manual").classList.add("hidden");
+        $("project-trigger").focus();
+      };
+      $("project_id").addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          $("project-manual-done").click();
+        }
+      });
+      $("project_id").addEventListener("input", () => {
+        if ($("project_id").value.trim() !== config.project_id)
+          for (const key of [
+            "endpoint_folder",
+            "schema_folder",
+            "branch",
+            "module",
+          ])
+            $(key).value = "";
+        projectCaption();
+      });
+      $("scan").onclick = () => send({ op: "scan", scope: "project" });
+      $("search").oninput = () => viewList();
+      for (const b of document.querySelectorAll("[data-tab]"))
+        b.onclick = () => {
+          for (const other of document.querySelectorAll("[data-tab]"))
+            other.setAttribute("aria-selected", String(other === b));
+          for (const id of ["model", "spec", "debug"])
+            $(id).classList.toggle("hidden", id !== b.dataset.tab);
+        };
+      $("send").onclick = () => {
+        try {
+          const headers = JSON.parse($("headers").value || "{}");
+          if (!headers || Array.isArray(headers) || typeof headers !== "object")
+            throw Error("请求头必须是 JSON 对象");
+          send({
+            op: "debug",
+            url: $("url").value,
+            method: $("method").value,
+            headers: Object.entries(headers).map(([k, v]) => [k, String(v)]),
+            body: $("body").value,
+          });
+        } catch (e) {
+          status(e.message, true);
+        }
+      };
+      openidea.onMessage((raw) => {
+        const action = pendingAction;
+        pendingAction = null;
+        lock(false);
+        const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (v.op === "config") {
+          if (!configDirty || v.saved === true) applyConfig(v);
+        } else if (v.op === "projects") {
+          remoteProjects = v.projects;
+          projectsLoaded = true;
+          projectListMessage = v.notices?.join(" ") || "";
+          renderProjects();
+          projectCaption();
+        } else if (v.op === "scan") {
+          rememberExpansion();
+          result = v.export;
+          activeKey = null;
+          viewList(false);
+          show(0);
+          diagnostics(result);
+          status(
+            `识别到 ${result.endpoints.length} 个接口，${result.warnings.length} 条错误，${(result.notices || []).length} 条结构提示。`,
+            result.warnings.length > 0,
+          );
+        } else if (v.op === "response") {
+          $("response").textContent = JSON.stringify(v.response, null, 2);
+          status("请求完成，HTTP " + v.response.status);
+        } else if (v.op === "error") {
+          status(v.message, true);
+          if (action === "list-projects") {
+            projectListMessage = v.message;
+            renderProjects();
+          }
+        } else if (v.op === "notice") status(v.message);
+      });
+      if (INITIAL && typeof INITIAL === "object") applyConfig(INITIAL);
+      else openidea.postMessage(JSON.stringify({ op: "init" }));
+    </script>
+  </body>
+</html>

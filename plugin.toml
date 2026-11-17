@@ -1,0 +1,113 @@
+id = "jhzhang.apifox-helper"
+name = "Apifox Helper for OpenIDEA"
+version = "0.1.11"
+description = "从 Java/Kotlin Spring、JAX-RS 源码生成 OpenAPI，预览嵌套响应模型，同步到 Apifox 并调试 HTTP 接口。"
+authors = ["jhzhang"]
+license = "Apache-2.0"
+homepage = "https://github.com/jhzhang09/apifox-helper-openidea"
+change-notes = "0.1.11：首次公开发布，提供 Java/Kotlin 源码扫描、OpenAPI 导出、Apifox 同步与 HTTP 调试。"
+icon = "icon.svg"
+categories = ["tools", "frameworks"]
+engines.openidea = "^1.9"
+wasm = "dist/plugin.wasm"
+activation = ["on-command:*", "on-view:apifox"]
+
+[capabilities]
+required = ["project.read", "project.write", "editor.read", "storage"]
+optional = ["secrets", "net:api.apifox.com", "net:localhost", "net:127.0.0.1", "net:ask"]
+
+[[contributes.secrets]]
+name = "apifox_token"
+label = "Apifox Access Token"
+description = "Apifox 账号设置中的 API 访问令牌，由系统密钥库保存，用于 api.apifox.com 的项目查询和同步请求。"
+
+[[contributes.views]]
+id = "apifox"
+title = "Apifox Helper"
+icon = "icon.svg"
+location = "right"
+
+[[contributes.commands]]
+id = "open-panel"
+title = "Apifox Helper: 打开接口侧栏"
+category = "Apifox Helper"
+
+[[contributes.commands]]
+id = "configure"
+title = "Apifox Helper: 配置同步项目"
+category = "Apifox Helper"
+
+[[contributes.commands]]
+id = "export-openapi"
+title = "Apifox Helper: 导出当前文件或目录的 OpenAPI"
+category = "Apifox Helper"
+
+[[contributes.commands]]
+id = "export-project"
+title = "Apifox Helper: 导出整个项目的 OpenAPI"
+category = "Apifox Helper"
+
+[[contributes.commands]]
+id = "export-method"
+title = "Apifox Helper: 导出光标所在接口的 OpenAPI"
+category = "Apifox Helper"
+
+[[contributes.commands]]
+id = "upload"
+title = "Apifox Helper: 同步当前文件或目录到 Apifox"
+category = "Apifox Helper"
+
+[[contributes.commands]]
+id = "upload-method"
+title = "Apifox Helper: 同步光标所在接口到 Apifox"
+category = "Apifox Helper"
+
+[[contributes.commands]]
+id = "debug"
+title = "Apifox Helper: 调试当前文件的接口"
+category = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "open-panel"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "export-openapi"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "export-method"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "upload"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "upload-method"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "editor.context"
+command = "debug"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "export-openapi"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "upload"
+submenu = "Apifox Helper"
+
+[[contributes.menus]]
+menu = "projectView.context"
+command = "open-panel"
+submenu = "Apifox Helper"

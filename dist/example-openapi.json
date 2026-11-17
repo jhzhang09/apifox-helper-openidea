@@ -1,0 +1,262 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Apifox Helper 示例",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/users": {
+      "get": {
+        "summary": "查询用户列表",
+        "description": "查询用户列表",
+        "tags": [
+          "用户管理"
+        ],
+        "x-apifox-folder": "用户管理",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "带地址与坐标的用户分页数据",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultPageUser"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "demo_2e_UserController_5f_list_5f_GET_5f__2f_api_2f_users"
+      },
+      "post": {
+        "summary": "创建用户",
+        "description": "创建用户",
+        "tags": [
+          "用户管理"
+        ],
+        "x-apifox-folder": "用户管理",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "创建结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultUser"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "description": "用户信息",
+          "content": {
+            "application/json": {
+              "schema": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/User"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "operationId": "demo_2e_UserController_5f_create_5f_POST_5f__2f_api_2f_users"
+      }
+    },
+    "/api/users/{id}": {
+      "get": {
+        "summary": "查询单个用户",
+        "description": "查询单个用户",
+        "tags": [
+          "用户管理"
+        ],
+        "x-apifox-folder": "用户管理",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "用户 ID",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "用户详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResultUser"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "demo_2e_UserController_5f_get_5f_GET_5f__2f_api_2f_users_2f__7b_id_7d_"
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Address": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "城市名称",
+            "example": "北京"
+          },
+          "point": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Geo"
+              }
+            ],
+            "description": "地理坐标"
+          }
+        },
+        "x-apifox-orders": [
+          "city",
+          "point"
+        ],
+        "description": "地址。",
+        "title": "Address"
+      },
+      "Geo": {
+        "type": "object",
+        "properties": {
+          "latitude": {
+            "type": "number",
+            "format": "double",
+            "description": "纬度"
+          },
+          "longitude": {
+            "type": "number",
+            "format": "double",
+            "description": "经度"
+          }
+        },
+        "x-apifox-orders": [
+          "latitude",
+          "longitude"
+        ],
+        "description": "地理坐标。",
+        "title": "Geo"
+      },
+      "PageUser": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/User"
+            },
+            "description": "当前页记录"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64",
+            "description": "总记录数"
+          }
+        },
+        "x-apifox-orders": [
+          "rows",
+          "total"
+        ],
+        "description": "分页数据。",
+        "title": "PageUser"
+      },
+      "ResultPageUser": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "业务状态码"
+          },
+          "payload": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PageUser"
+              }
+            ],
+            "description": "业务数据"
+          }
+        },
+        "x-apifox-orders": [
+          "code",
+          "payload"
+        ],
+        "description": "实际响应字段使用 payload，插件必须尊重源码。",
+        "title": "ResultPageUser"
+      },
+      "ResultUser": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "description": "业务状态码"
+          },
+          "payload": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/User"
+              }
+            ],
+            "description": "业务数据"
+          }
+        },
+        "x-apifox-orders": [
+          "code",
+          "payload"
+        ],
+        "description": "实际响应字段使用 payload，插件必须尊重源码。",
+        "title": "ResultUser"
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "用户姓名"
+          },
+          "address": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Address"
+              }
+            ],
+            "description": "居住地址"
+          },
+          "contacts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/Address"
+              }
+            },
+            "description": "分类联系地址"
+          }
+        },
+        "x-apifox-orders": [
+          "name",
+          "address",
+          "contacts"
+        ],
+        "required": [
+          "name"
+        ],
+        "description": "用户资料。",
+        "title": "User"
+      }
+    }
+  }
+}

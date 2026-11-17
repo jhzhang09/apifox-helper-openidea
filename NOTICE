@@ -1,0 +1,6 @@
+Apifox Helper for OpenIDEA
+Copyright 2026 jhzhang
+
+本项目独立实现 OpenIDEA 适配与文档生成逻辑。
+OpenIDEA Rust SDK 来自 l0ng-ai/openidea v0.1.46，保留于 vendor/openidea-plugin，使用 Apache-2.0 许可。
+原始 ApifoxHelper 安装包仅作为本地功能参考，不包含在新插件安装包中。
