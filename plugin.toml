@@ -1,11 +1,11 @@
 id = "jhzhang.apifox-helper"
 name = "Apifox Helper for OpenIDEA"
-version = "0.1.11"
+version = "0.1.12"
 description = "从 Java/Kotlin Spring、JAX-RS 源码生成 OpenAPI，预览嵌套响应模型，同步到 Apifox 并调试 HTTP 接口。"
 authors = ["jhzhang"]
 license = "Apache-2.0"
 homepage = "https://github.com/jhzhang09/apifox-helper-openidea"
-change-notes = "0.1.11：首次公开发布，提供 Java/Kotlin 源码扫描、OpenAPI 导出、Apifox 同步与 HTTP 调试。"
+change-notes = "0.1.12：增加发布者签名与社区市场发布流程，完整携带第三方许可声明。"
 icon = "icon.svg"
 categories = ["tools", "frameworks"]
 engines.openidea = "^1.9"

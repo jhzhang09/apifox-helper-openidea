@@ -77,18 +77,46 @@ Cargo.lock 固定依赖版本。更新依赖后运行：
 python3 scripts/third_party.py
 ```
 
-该脚本从本地 Cargo metadata 和依赖源码生成 THIRD_PARTY_NOTICES.md 及 licenses/，不下载业务数据。保留 vendored SDK 的原始许可与声明。npm 依赖只用于开发，不进入插件安装包。
+该脚本从本地 Cargo metadata 和依赖源码生成 THIRD_PARTY_NOTICES.md、licenses/ 及 NOTICE，不下载业务数据。NOTICE 汇总 SDK 声明和完整依赖许可，因为官方打包工具会收录 NOTICE，但不会自动收录 licenses/。npm 依赖只用于开发，不进入插件安装包。
 
 ## GitHub Release
 
 1. 对齐 Cargo.toml 与 plugin.toml 版本，更新 CHANGELOG.md。
 2. 完成检查、构建安装包并核对源码范围。
 3. 提交源码后创建 v<version> 标签。
-4. 在 Releases 附加对应的 .oiplugin 和 SHA256SUMS，说明兼容版本与未签名状态。
+4. 对正式发布包执行签名，再在 Releases 附加对应的 .oiplugin 和 SHA256SUMS，说明兼容版本及签名身份。
 
 CI 对 push 和 PR 执行 Rust、侧栏和构建检查，保存短期构建产物。Release 本身由维护者显式发布，CI 不自动对外上传接口文档或读取 Apifox 令牌。
 
-当前只发布 GitHub Release。上架 OpenIDEA 社区市场还需维护者保管 Ed25519 发布者私钥、用官方工具签名，并向 [openidea-plugins](https://github.com/l0ng-ai/openidea-plugins) 提交注册表 PR。不要把私钥放入源码或发布附件。
+## 签名与社区市场
+
+从 v0.1.12 起正式 Release 使用发布者 `jhzhang` 的 Ed25519 密钥签名，插件 ID 保持 `jhzhang.apifox-helper`。本地 `build.sh` 和 CI 生成的开发包仍未签名，不能直接作为市场附件。
+
+首次发布者初始化：
+
+```sh
+mkdir -p ~/.config/openidea-publishers
+chmod 700 ~/.config/openidea-publishers
+openidea-plugin keygen ~/.config/openidea-publishers/jhzhang.key
+```
+
+私钥需备份到维护者自己的安全存储，后续版本复用该文件。不要把私钥放入源码、日志或发布附件。注册表只提交工具打印的公钥。
+
+构建并签名（已用官方 v0.1.47 工具验证）：
+
+```sh
+./scripts/build.sh
+./scripts/sign.sh ~/.config/openidea-publishers/jhzhang.key
+```
+
+`sign.sh` 使用官方工具完成检查、签名打包和最终安装检查，并重新计算 SHA256SUMS；也可通过 OPENIDEA_PLUGIN 指定工具路径。签名完成后不要再次运行 build.sh 覆盖正式包。
+
+将最终包和 SHA256SUMS 上传 Release 后，向 [openidea-plugins](https://github.com/l0ng-ai/openidea-plugins) 提交 PR：
+
+- `publishers/jhzhang.toml`：维护账号 `jhzhang09`、公钥和撤销列表，首次提交时添加。
+- `plugins/jhzhang.apifox-helper.toml`：源码仓库、版本、最终包 URL 和 SHA256；可配置 pom.xml、build.gradle、build.gradle.kts 推荐条件。
+
+注册表会校验下载、哈希、宿主兼容性和签名，并由维护者审核功能定位与权限。提交 PR 不代表已收录，市场状态以注册表合并及官方索引同步为准。后续更新增加版本条目，保留较早 API 的兼容版本。
 
 ## 目录
 

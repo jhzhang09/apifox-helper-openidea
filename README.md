@@ -45,7 +45,7 @@ public ResponseEntity<Result<Page<User>>> list()
 2. 打开 **Settings → Plugins → ⋮ → Install Plugin from Package File…**，选择安装包。部分版本的菜单显示为 **Install Plugin from Disk…**。
 3. 审核权限并启用插件；在 Find Action 中运行 **Apifox Helper: 打开接口侧栏**。
 
-当前 GitHub 发布包是**未签名包**，需从磁盘安装并确认权限。公开仓库和 Release 不代表已通过 OpenIDEA 社区市场审核；市场上架还需要发布者签名及注册表审核。参见 [官方发布规范](https://openidea.sh/en/plugins/publishing/marketplace)。
+从 v0.1.12 起，正式 Release 使用发布者 **jhzhang** 的 Ed25519 密钥签名；v0.1.11 为未签名版本。社区市场收录以 [注册表](https://github.com/l0ng-ai/openidea-plugins) 合并及索引同步为准，提交审核期间可以从磁盘安装签名包。参见 [官方发布规范](https://openidea.sh/en/plugins/publishing/marketplace)。
 
 ## 第一次使用
 
@@ -140,6 +140,6 @@ cargo run --locked --example export -- examples/demo yaml > /tmp/example-openapi
 
 ## 许可与致谢
 
-本项目采用 [Apache-2.0](LICENSE)，第三方声明见 [NOTICE](NOTICE)。
+本项目采用 [Apache-2.0](LICENSE)，完整第三方许可见 [NOTICE](NOTICE)，依赖清单见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 感谢 [OpenIDEA](https://github.com/l0ng-ai/openidea) 的插件 SDK 和示例、[Apifox Helper](https://plugins.jetbrains.com/plugin/20549-apifoxhelper) 的功能设计，以及 [spring-api-export](https://github.com/YUYUY9527/spring-api-export) 的参考实现。本项目独立实现适配逻辑，未复制 Apifox 官方插件或 spring-api-export 的源码，也不分发原始 IDEA 插件安装包。
