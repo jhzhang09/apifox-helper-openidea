@@ -9,3 +9,5 @@
 5. 提交 PR 前运行 cargo test、Clippy、rustfmt 和 npm test，必要时重新生成示例与 WASM。
 
 新增网络、文件写入、密钥或其他权限时，需要在 README 解释用途。请勿提交构建缓存、发布者私钥、个人 IDE 配置或真实项目导出。
+
+正式发版和后续社区市场更新统一遵循 [发布手册](docs/releasing.md)。复用现有发布者和密钥，对公开 CI 组件签名，发布新的 Release，并新建注册表版本更新 PR；只发布 Release 不会自动更新市场。

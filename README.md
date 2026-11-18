@@ -8,7 +8,7 @@
 
 这是独立开发的 **OpenIDEA 社区插件**，与 Apifox、OpenIDEA 官方没有隶属关系。插件以 Rust 编写，运行在 OpenIDEA 的 WebAssembly 沙箱中，使用系统密钥库保存访问令牌。
 
-**[下载最新插件](https://github.com/jhzhang09/apifox-helper-openidea/releases/latest)** · [配置与说明优先级](docs/configuration.md) · [兼容范围](docs/compatibility.md) · [开发与构建](docs/development.md) · [更新记录](CHANGELOG.md)
+**[下载最新插件](https://github.com/jhzhang09/apifox-helper-openidea/releases/latest)** · [配置与说明优先级](docs/configuration.md) · [兼容范围](docs/compatibility.md) · [开发与构建](docs/development.md) · [发布与市场更新](docs/releasing.md) · [更新记录](CHANGELOG.md)
 
 ## 能做什么
 
@@ -148,7 +148,7 @@ npm test
 
 构建输出为 `dist/plugin.wasm`、`.oiplugin` 和 `SHA256SUMS`。SDK 固定复制自 OpenIDEA `v0.1.46`，出处与许可保存在 [vendor/openidea-plugin/UPSTREAM.md](vendor/openidea-plugin/UPSTREAM.md)。
 
-构建、校验、发布流程见 [开发文档](docs/development.md)。示例源码位于 [examples/demo](examples/demo)，可在没有 IDE 的环境生成文档：
+构建和本地校验见 [开发文档](docs/development.md)；正式发版及后续社区市场更新统一遵循 [发布手册](docs/releasing.md)。示例源码位于 [examples/demo](examples/demo)，可在没有 IDE 的环境生成文档：
 
 ```sh
 cargo run --locked --example export -- examples/demo > /tmp/example-openapi.json

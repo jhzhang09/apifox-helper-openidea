@@ -82,47 +82,11 @@ python3 scripts/third_party.py
 
 该脚本从本地 Cargo metadata 和依赖源码生成 THIRD_PARTY_NOTICES.md、licenses/ 及 NOTICE，不下载业务数据。NOTICE 汇总 SDK 声明和完整依赖许可，因为官方打包工具会收录 NOTICE，但不会自动收录 licenses/。npm 依赖只用于开发，不进入插件安装包。
 
-## GitHub Release
+## 正式发布与社区市场
 
-1. 对齐 Cargo.toml 与 plugin.toml 版本，更新 CHANGELOG.md。
-2. 完成检查、构建安装包并核对源码范围。
-3. 提交源码后创建 v<version> 标签。
-4. 对正式发布包执行签名，再在 Releases 附加对应的 .oiplugin 和 SHA256SUMS，说明兼容版本及签名身份。
+正式发版及后续更新统一遵循 [发布手册](releasing.md)，该手册是本项目发布流程的唯一入口，包含验证、公开 CI 产物签名、Release 附件核验、社区注册表新版 PR 及市场同步检查。
 
-CI 对 push 和 PR 执行 Rust、侧栏和构建检查，保存未签名包和校验和。未签名包包含 dist/plugin.wasm 与 dist/build-info.json，下载后可以直接提取组件和编译环境摘要。Release 本身由维护者显式发布，CI 不自动对外上传接口文档或读取 Apifox 令牌。
-
-## 签名与社区市场
-
-从 v0.1.12 起正式 Release 使用发布者 `jhzhang` 的 Ed25519 密钥签名，插件 ID 保持 `jhzhang.apifox-helper`。本地 `build.sh` 和 CI 生成的开发包仍未签名，不能直接作为市场附件。
-
-首次发布者初始化：
-
-```sh
-mkdir -p ~/.config/openidea-publishers
-chmod 700 ~/.config/openidea-publishers
-openidea-plugin keygen ~/.config/openidea-publishers/jhzhang.key
-```
-
-私钥需备份到维护者自己的安全存储，后续版本复用该文件。不要把私钥放入源码、日志或发布附件。注册表只提交工具打印的公钥。
-
-本地候选包可用 build.sh 构建；正式 Release 必须从对应提交的公开 CI 下载产物后签名，以便核对源码、公开构建和最终安装包：
-
-```sh
-gh run download <通过的CI运行编号> --repo jhzhang09/apifox-helper-openidea \
-  --name apifox-helper-openidea --dir /tmp/apifox-ci-artifact
-./scripts/sign.sh ~/.config/openidea-publishers/jhzhang.key /tmp/apifox-ci-artifact
-```
-
-`sign.sh` 从 CI 产物目录中的唯一未签名包读取组件和构建信息（也支持已提取的 plugin.wasm、build-info.json），校验 CI 来源、干净源码状态、当前提交和输入摘要，再直接使用 CI 的组件进行官方签名打包，不重新编译。它拒绝不同提交或摘要不匹配的产物；仍可只传私钥签本地测试包，也可通过 OPENIDEA_PLUGIN 指定工具路径。签名完成后不要再次运行 build.sh 覆盖正式包。
-
-正式 Release 同时附加 build-info.json，并给出 CI 链接；解压签名包，确认其中 dist/plugin.wasm 的 SHA256 与该公开 CI 的组件摘要一致。原生构建与 Linux CI 的二进制可能不同，不能用未解释的平台差异代替对应核验。
-
-将最终包和 SHA256SUMS 上传 Release 后，向 [openidea-plugins](https://github.com/l0ng-ai/openidea-plugins) 提交 PR：
-
-- `publishers/jhzhang.toml`：维护账号 `jhzhang09`、公钥和撤销列表，首次提交时添加。
-- `plugins/jhzhang.apifox-helper.toml`：源码仓库、版本、最终包 URL 和 SHA256；可配置 pom.xml、build.gradle、build.gradle.kts 推荐条件。
-
-注册表会校验下载、哈希、宿主兼容性和签名，并由维护者审核功能定位与权限。提交 PR 不代表已收录，市场状态以注册表合并及官方索引同步为准。后续更新增加版本条目，保留较早 API 的兼容版本。
+本地 `build.sh` 和 CI 生成未签名开发包。正式 Release 使用发布者 `jhzhang` 的原 Ed25519 密钥，对对应提交的公开 CI 组件签名，不重新编译。仅发布 GitHub Release 不会自动更新社区市场；后续版本需要新的注册表更新 PR。
 
 ## 目录
 
