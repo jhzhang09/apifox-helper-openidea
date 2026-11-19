@@ -575,6 +575,7 @@ fn find_constant<'a>(
     ident: &str,
     ctx: &'a Class,
     classes: &'a [Class],
+    ambiguity: &mut Option<String>,
 ) -> Option<(&'a Class, String, &'a str)> {
     if let Some((holder, const_name)) = ident.rsplit_once('.') {
         let holder_class = resolve_class_quiet(holder, ctx, classes)?;
@@ -587,20 +588,38 @@ fn find_constant<'a>(
     {
         return Some((owner, ident.to_string(), val));
     }
-    for imp in ctx.static_imports.iter().chain(ctx.imports.iter()) {
-        if let Some(holder_fqn) = imp.strip_suffix(&format!(".{ident}"))
-            && let Some(holder) = classes.iter().find(|c| c.qualified() == holder_fqn)
-            && let Some((owner, val)) =
-                find_constant_in_hierarchy(ident, holder, classes, &mut BTreeSet::new())
+    for suffix in [format!(".{ident}"), ".*".to_owned()] {
+        let mut candidates = BTreeMap::new();
+        let mut explicit = false;
+        for holder_name in ctx
+            .static_imports
+            .iter()
+            .chain(ctx.imports.iter())
+            .filter_map(|imp| imp.strip_suffix(&suffix))
         {
-            return Some((owner, ident.to_string(), val));
+            explicit |= suffix != ".*";
+            if let Some(holder) = classes
+                .iter()
+                .find(|class| class.qualified() == holder_name)
+                && let Some((owner, value)) =
+                    find_constant_in_hierarchy(ident, holder, classes, &mut BTreeSet::new())
+            {
+                candidates.insert(owner.qualified(), (owner, ident.to_string(), value));
+            }
         }
-        if let Some(holder_fqn) = imp.strip_suffix(".*")
-            && let Some(holder) = classes.iter().find(|c| c.qualified() == holder_fqn)
-            && let Some((owner, val)) =
-                find_constant_in_hierarchy(ident, holder, classes, &mut BTreeSet::new())
-        {
-            return Some((owner, ident.to_string(), val));
+        if candidates.len() > 1 {
+            *ambiguity = Some(format!(
+                "路由常量 {ident} 导入歧义：{}",
+                candidates.keys().cloned().collect::<Vec<_>>().join("、")
+            ));
+            return None;
+        }
+        if explicit || !candidates.is_empty() {
+            return if candidates.len() == 1 {
+                candidates.into_values().next()
+            } else {
+                None
+            };
         }
     }
     None
@@ -636,6 +655,7 @@ fn resolve_route_expr(
     classes: &[Class],
     visited: &mut BTreeSet<(String, String)>,
     depth: usize,
+    ambiguity: &mut Option<String>,
 ) -> Option<String> {
     if depth > 16 || expr.is_empty() {
         return None;
@@ -657,12 +677,13 @@ fn resolve_route_expr(
             && !part.starts_with('.')
             && !part.ends_with('.')
         {
-            let (owner, name, raw_val) = find_constant(part, ctx, classes)?;
+            let (owner, name, raw_val) = find_constant(part, ctx, classes, ambiguity)?;
             let key = (owner.qualified(), name);
             if !visited.insert(key.clone()) {
                 return None;
             }
-            let resolved = resolve_route_expr(raw_val, owner, classes, visited, depth + 1);
+            let resolved =
+                resolve_route_expr(raw_val, owner, classes, visited, depth + 1, ambiguity);
             visited.remove(&key);
             out.push_str(&resolved?);
         } else {
@@ -682,8 +703,14 @@ fn resolve_route_candidate(
         return Ok(raw.to_string());
     };
     for ctx in contexts {
-        if let Some(resolved) = resolve_route_expr(expr, ctx, classes, &mut BTreeSet::new(), 0) {
+        let mut ambiguity = None;
+        if let Some(resolved) =
+            resolve_route_expr(expr, ctx, classes, &mut BTreeSet::new(), 0, &mut ambiguity)
+        {
             return Ok(resolved);
+        }
+        if let Some(reason) = ambiguity {
+            return Err(format!("{reason}（{controller_path}）"));
         }
     }
     Err(format!("路由包含未解析的常量 {expr}（{controller_path}）"))

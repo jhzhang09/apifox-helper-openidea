@@ -62,6 +62,7 @@ pub struct Field {
 }
 #[derive(Clone, Debug, Default)]
 pub struct Method {
+    pub returned_field: Option<String>,
     pub name: String,
     pub ty: String,
     pub annotations: Vec<Annotation>,
@@ -96,6 +97,7 @@ pub struct Class {
     pub methods: Vec<Method>,
     pub variants: Vec<String>,
     pub enum_items: Vec<EnumVariant>,
+    pub enum_constructors: Vec<BTreeMap<String, usize>>,
 }
 impl Class {
     pub fn qualified(&self) -> String {
@@ -1095,8 +1097,61 @@ fn parse_tokens(
                 } else {
                     after
                 };
+                let body: Vec<_> = if is_enum
+                    && t(ts, after) == "{"
+                    && finish <= ts.len()
+                    && finish >= after + 2
+                {
+                    ts[after + 1..finish - 1]
+                        .iter()
+                        .map(|token| token.text.as_str())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                if is_enum && name == c.name.rsplit('.').next().unwrap_or(&c.name) {
+                    let params = split(&ts[par + 1..end], ",");
+                    let names: Vec<_> = params
+                        .iter()
+                        .map(|param| field(param, kotlin).map(|param| param.name))
+                        .collect();
+                    let mut bindings = BTreeMap::new();
+                    for statement in body.split_inclusive(|token| *token == ";") {
+                        let (target, source) = match statement {
+                            ["this", ".", target, "=", source, ";"] => (target, source),
+                            [target, "=", source, ";"]
+                                if !names.iter().any(|name| name.as_deref() == Some(*target)) =>
+                            {
+                                (target, source)
+                            }
+                            _ => {
+                                bindings.clear();
+                                break;
+                            }
+                        };
+                        if let Some(index) = names
+                            .iter()
+                            .position(|name| name.as_deref() == Some(*source))
+                        {
+                            if bindings.insert((*target).to_owned(), index).is_some() {
+                                bindings.clear();
+                                break;
+                            }
+                        } else {
+                            bindings.clear();
+                            break;
+                        }
+                    }
+                    c.enum_constructors.push(bindings);
+                }
                 if name != c.name.rsplit('.').next().unwrap_or(&c.name) {
                     c.methods.push(Method {
+                        returned_field: match body.as_slice() {
+                            ["return", field, ";"] | ["return", "this", ".", field, ";"] => {
+                                Some((*field).to_owned())
+                            }
+                            _ => None,
+                        },
                         name,
                         ty,
                         annotations: anns,

@@ -279,6 +279,78 @@ fn upload_requires_confirmation_and_host_replaces_secret_without_uploading_sourc
     assert_eq!(h.requests().len(), 1);
 }
 #[test]
+fn upload_uses_bound_enum_values_and_unambiguous_static_routes() {
+    for (imports, ambiguous) in [
+        (
+            "import static wrong.Routes.*; import static good.Routes.PATH;",
+            false,
+        ),
+        (
+            "import static good.Routes.PATH; import static wrong.Routes.*;",
+            false,
+        ),
+        (
+            "import static good.Routes.*; import static wrong.Routes.*;",
+            true,
+        ),
+    ] {
+        for (ty, args, expected, getter) in [
+            ("String", "\"A_CODE\"", json!(["A_CODE"]), false),
+            ("int", "10", json!([10]), true),
+            ("int", "10", Value::Null, false),
+        ] {
+            let h = MockHost::install().with_capabilities(&[
+                "project.read",
+                "storage",
+                "editor.read",
+                "secrets",
+                "net:api.apifox.com",
+            ]);
+            for (pkg, path) in [("good", "right"), ("wrong", "wrong")] {
+                h.add_file(&format!("{pkg}/Routes.java"), &format!("package {pkg}; public class Routes {{ public static final String PATH = \"/{path}\"; }}"));
+            }
+            let marker = if getter { "" } else { "@JsonValue" };
+            let accessor = if getter {
+                "@JsonValue public int value(){ return this.code; }"
+            } else {
+                ""
+            };
+            let rhs = if expected.is_null() { "arg + 1" } else { "arg" };
+            h.add_file("State.java",&format!("enum State {{ A({args}, \"Alpha\"); final String label; {marker} final {ty} code; State({ty} arg,String description) {{ this.code={rhs}; this.label=description; }} {accessor} }}"));
+            h.add_file("Api.java",&format!("{imports} @RestController class Api {{ @GetMapping(PATH) public State route() {{ return null; }} }}"));
+            h.select_paths(&["Api.java"]);
+            h.set_secret("apifox_token", "mock");
+            host::storage::set("config:/project", r#"{"project_id":"123"}"#).unwrap();
+            h.answer_next_prompt(Some(&["yes"]));
+            let blocked = ambiguous || expected.is_null();
+            h.on_fetch(move |request| {
+                let envelope: Value =
+                    serde_json::from_slice(request.body.as_ref().unwrap()).unwrap();
+                let doc: Value = serde_json::from_str(envelope["input"].as_str().unwrap()).unwrap();
+                assert_eq!(
+                    doc["paths"].as_object().unwrap().keys().collect::<Vec<_>>(),
+                    ["/right"]
+                );
+                assert!(
+                    doc["components"]["schemas"]
+                        .as_object()
+                        .unwrap()
+                        .values()
+                        .any(|schema| schema["enum"] == expected)
+                );
+                Ok(openidea_plugin::HttpResponse {
+                    status: 200,
+                    body: br#"{"data":{"counters":{"endpointCreated":1,"endpointUpdated":0,"schemaCreated":1}}}"#.to_vec(),
+                    ..Default::default()
+                })
+            });
+            let outcome = ApifoxHelper.run_command("upload", &h.invocation(), None);
+            assert_eq!(outcome.is_err(), blocked, "{outcome:?}");
+            assert_eq!(h.requests().len(), usize::from(!blocked));
+        }
+    }
+}
+#[test]
 fn malformed_sources_and_unsupported_legacy_rules_are_visible() {
     let h = MockHost::install();
     h.add_file("Api.java", "class Api {");

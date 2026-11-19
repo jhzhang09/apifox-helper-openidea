@@ -420,47 +420,33 @@ impl<'a> Schemas<'a> {
         json!({"$ref":format!("#/components/schemas/{key}")})
     }
 
-    fn enum_schema(&self, class: &Class) -> Value {
+    fn enum_schema(&mut self, class: &Class) -> Value {
         if class.enum_items.is_empty() {
             return json!({"type":"string","enum":class.variants});
         }
-        let json_val_target = class
+        let enabled = |annotations: &[crate::source::Annotation]| {
+            annotation(annotations, "JsonValue")
+                .is_some_and(|ann| ann.value("value").as_deref() != Some("false"))
+        };
+        let targets: Vec<_> = class
             .fields
             .iter()
-            .enumerate()
-            .find(|(_, f)| {
-                annotation(&f.annotations, "JsonValue")
-                    .is_some_and(|a| a.value("value").as_deref() != Some("false"))
-            })
-            .map(|(idx, f)| (idx, Type::parse(&f.ty)))
-            .or_else(|| {
+            .filter(|field| enabled(&field.annotations))
+            .map(|field| (Some(&field.name), &field.ty))
+            .chain(
                 class
                     .methods
                     .iter()
-                    .find(|m| {
-                        annotation(&m.annotations, "JsonValue")
-                            .is_some_and(|a| a.value("value").as_deref() != Some("false"))
-                    })
-                    .map(|m| {
-                        let stem = m
-                            .name
-                            .strip_prefix("get")
-                            .or_else(|| m.name.strip_prefix("is"))
-                            .unwrap_or(&m.name);
-                        let lower = stem
-                            .chars()
-                            .next()
-                            .map(|c| format!("{}{}", c.to_lowercase(), &stem[c.len_utf8()..]))
-                            .unwrap_or_default();
-                        let idx = class
-                            .fields
-                            .iter()
-                            .position(|f| f.name == lower || f.name == stem)
-                            .unwrap_or(0);
-                        (idx, Type::parse(&m.ty))
-                    })
-            });
-
+                    .filter(|method| enabled(&method.annotations))
+                    .map(|method| (method.returned_field.as_ref(), &method.ty)),
+            )
+            .collect();
+        let json_val_target = match (targets.as_slice(), class.enum_constructors.as_slice()) {
+            ([(Some(name), ty)], [bindings]) => {
+                bindings.get(*name).map(|idx| (*idx, Type::parse(ty)))
+            }
+            _ => None,
+        };
         let mut used_val_idx = None;
         let mut out_type = json!("string");
         let mut out_format: Option<&'static str> = None;
@@ -511,6 +497,13 @@ impl<'a> Schemas<'a> {
             }
         }
 
+        if !targets.is_empty() && used_val_idx.is_none() {
+            self.warn(format!(
+                "无法可靠解析 {} 的 @JsonValue 构造参数绑定或枚举值",
+                class.qualified()
+            ));
+            return json!({"x-apifox-unresolved":true});
+        }
         if used_val_idx.is_none() {
             values = class
                 .enum_items
