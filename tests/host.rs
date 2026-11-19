@@ -7,6 +7,57 @@ use openidea_plugin::{Error, Plugin, host, mock::MockHost};
 use serde_json::{Value, json};
 const API: &str = r#"package demo; @RestController class Api { @GetMapping("/first") public User first(){return null;} @GetMapping("/second") public User second(){return null;} } class User { private Address address; } class Address { private String city; }"#;
 #[test]
+fn auto_debug_base_is_project_wide_and_manual_overrides_remain_module_scoped() {
+    let h = MockHost::install();
+    h.add_file("app/src/main/java/Api.java", API);
+    h.add_file(
+        "app/src/main/resources/application.yml",
+        "server:\n  address: 127.0.0.2\n  port: ${PORT:9091}",
+    );
+    h.add_file(
+        "other/src/main/java/Other.java",
+        "@RestController class Other { @GetMapping(\"/other\") String other(){return null;} }",
+    );
+    let export = scan(&h.invocation(), "project").unwrap();
+    assert!(export.endpoints.iter().any(|ep| ep.module_path == "other"));
+    assert_eq!(export.detected_url, "http://127.0.0.2:9091");
+    assert_eq!(
+        scan(&h.invocation(), "project").unwrap().detected_url,
+        export.detected_url
+    );
+    h.add_file(
+        "app/src/main/resources/application.yml",
+        "server:\n  port: 9898",
+    );
+    assert_eq!(
+        scan(&h.invocation(), "project").unwrap().detected_url,
+        "http://localhost:9898"
+    );
+    let mut plugin = ApifoxHelper;
+    let saved = view_message(
+        &mut plugin,
+        &h,
+        json!({"op":"save-debug","modulePath":"app","baseUrl":"https://localhost:9443","headers":"{}"}),
+    );
+    assert_eq!(saved["module_urls"]["app"], "https://localhost:9443");
+    let saved = view_message(
+        &mut plugin,
+        &h,
+        json!({"op":"save-config","config":{"project_id":"123"}}),
+    );
+    assert_eq!(
+        saved["config"]["module_urls"]["app"],
+        "https://localhost:9443"
+    );
+    let cleared = view_message(
+        &mut plugin,
+        &h,
+        json!({"op":"save-debug","modulePath":"app","baseUrl":"","headers":""}),
+    );
+    assert_eq!(cleared["module_urls"]["app"], "");
+}
+
+#[test]
 fn scans_project_selected_directory_and_unsaved_buffers() {
     let h = MockHost::install();
     h.add_file("src/Api.java", API);
@@ -32,6 +83,25 @@ fn denied_project_access_does_not_produce_success() {
         Err(Error::Denied(_))
     ));
 }
+#[test]
+fn partial_export_keeps_project_rule_warnings() {
+    let host = MockHost::install();
+    host.add_file("Api.java", API);
+    host.add_file(".apifox-helper.properties", "field.ignore=invalid");
+    let full = scan(&host.invocation(), "project").unwrap();
+    let id = full.endpoints[0].operation["operationId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let filtered = filter_export(full, &[id]).unwrap();
+    assert!(
+        filtered
+            .warnings
+            .iter()
+            .any(|msg| msg.contains("field.ignore"))
+    );
+}
+
 #[test]
 fn stable_ids_filter_selection_and_reject_disappeared_endpoints() {
     let h = MockHost::install();
@@ -517,4 +587,304 @@ fn invalid_config_save_does_not_replace_existing_storage() {
             .project_id,
         "12345"
     );
+}
+
+#[test]
+fn filter_export_isolates_warnings_per_selected_endpoint() {
+    let h = MockHost::install();
+    h.add_file(
+        "src/GoodController.java",
+        r#"package demo;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/good")
+public class GoodController {
+    @GetMapping("/ok")
+    public String ok() { return "ok"; }
+}
+"#,
+    );
+    h.add_file(
+        "src/BadController.java",
+        r#"package demo;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/bad")
+public class BadController {
+    @GetMapping("/bad")
+    public MissingDto broken() { return null; }
+}
+"#,
+    );
+
+    let all = scan(&h.invocation(), "project").unwrap();
+    assert!(
+        !all.warnings.is_empty(),
+        "expected warnings from BadController"
+    );
+    let good_id = all
+        .endpoints
+        .iter()
+        .find(|e| e.path == "/good/ok")
+        .expect("good endpoint")
+        .operation["operationId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let filtered = filter_export(all.clone(), &[good_id]).unwrap();
+    assert_eq!(filtered.endpoints.len(), 1);
+    assert!(
+        filtered.warnings.is_empty(),
+        "unrelated warnings leaked: {:?}",
+        filtered.warnings
+    );
+
+    let bad_id = all
+        .endpoints
+        .iter()
+        .find(|e| e.handler.contains("BadController"))
+        .expect("bad endpoint")
+        .operation["operationId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bad_filtered = filter_export(all, &[bad_id]).unwrap();
+    assert!(
+        !bad_filtered.warnings.is_empty(),
+        "bad endpoint should keep its own warnings"
+    );
+}
+
+#[test]
+fn navigate_supports_snapshot_fast_path_and_file_target() {
+    let h = MockHost::install();
+    h.add_file(
+        "src/UsersController.java",
+        "package demo;\nimport org.springframework.web.bind.annotation.*;\n@RestController\npublic class UsersController {\n    @GetMapping(\"/users\")\n    public String list() { return \"\"; }\n}\n",
+    );
+    let mut plugin = ApifoxHelper;
+    plugin
+        .handle(
+            "apifox",
+            ViewEvent::Message(
+                json!({"op":"scan","scope":"project","projectRoot":"/project"}).to_string(),
+            ),
+            &h.invocation(),
+        )
+        .unwrap();
+    let scan_msg: Value = serde_json::from_str(&h.view_messages().last().unwrap().1).unwrap();
+    let op_id = scan_msg["export"]["endpoints"][0]["operation"]["operationId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Introduce a separate file that would trigger a warning/error if rescanned, then navigate via snapshot.
+    h.add_file(
+        "src/Broken.java",
+        "package demo; class Broken { public void x( ",
+    );
+    plugin
+        .handle(
+            "apifox",
+            ViewEvent::Message(
+                json!({"op":"navigate","operationId":op_id,"projectRoot":"/project"}).to_string(),
+            ),
+            &h.invocation(),
+        )
+        .unwrap();
+
+    // Direct navigation by diagnostic file link
+    plugin
+        .handle(
+            "apifox",
+            ViewEvent::Message(
+                json!({"op":"navigate","file":"src/UsersController.java","line":5,"projectRoot":"/project"})
+                    .to_string(),
+            ),
+            &h.invocation(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn gradle_settings_and_build_scripts_extract_project_name() {
+    use apifox_helper_openidea::navigation::gradle_project_name;
+
+    assert_eq!(
+        gradle_project_name("rootProject.name = \"billing-service\"\n"),
+        Some("billing-service".to_string())
+    );
+    assert_eq!(
+        gradle_project_name("rootProject.name = 'orders-api'\n"),
+        Some("orders-api".to_string())
+    );
+    assert_eq!(
+        gradle_project_name("archivesBaseName = \"legacy-app\""),
+        Some("legacy-app".to_string())
+    );
+    assert_eq!(gradle_project_name("plugins { id(\"java\") }"), None);
+
+    let h = MockHost::install();
+    h.add_file("settings.gradle.kts", "rootProject.name = \"gradle-demo\"");
+    h.add_file(
+        "src/main/java/demo/PingController.java",
+        "package demo;\n@RestController\nclass PingController {\n  @GetMapping(\"/ping\") String ping(){return \"ok\";}\n}\n",
+    );
+    let export = scan(&h.invocation(), "project").unwrap();
+    assert_eq!(export.endpoints[0].module, "gradle-demo");
+}
+
+#[test]
+fn inherited_host_location_points_to_parent_method() {
+    use openidea_plugin::endpoints::EndpointsProvider;
+    let host = MockHost::install();
+    host.add_file(
+        "src/Base.java",
+        "package demo;\nclass Base {\n@GetMapping(\"/inherited\") String get(){return null;} }",
+    );
+    host.add_file(
+        "src/Api.java",
+        "package demo; @RestController class Api extends Base {}",
+    );
+    let endpoints = ApifoxHelper.endpoints(&host.invocation()).unwrap();
+    assert_eq!(endpoints.len(), 1);
+    assert_eq!(endpoints[0].location.path, "/project/src/Base.java");
+    assert_eq!(endpoints[0].location.range.start.line, 2);
+}
+
+#[test]
+fn endpoints_and_line_markers_providers_index_spring_methods() {
+    use openidea_plugin::endpoints::EndpointsProvider;
+    use openidea_plugin::providers::{Document, Providers};
+
+    let h = MockHost::install();
+    let code = "package demo;\nimport org.springframework.web.bind.annotation.*;\n@RestController\n@RequestMapping(\"/orders\")\npublic class OrderController {\n    /** 查询订单列表 */\n    @GetMapping(\"/list\")\n    public String list() { return \"\"; }\n}\n";
+    h.add_file("src/OrderController.java", code);
+
+    let mut plugin = ApifoxHelper;
+    let eps = plugin.endpoints(&h.invocation()).unwrap();
+    assert_eq!(eps.len(), 1);
+    assert_eq!(eps[0].method.as_deref(), Some("GET"));
+    assert_eq!(eps[0].path, "/orders/list");
+
+    let doc = Document {
+        path: "/project/src/OrderController.java".into(),
+        language: "java".into(),
+        text: code.into(),
+        version: 1,
+    };
+    let markers = plugin.line_markers(&doc);
+    assert_eq!(markers.len(), 1);
+    assert!(markers[0].tooltip.contains("GET") && markers[0].tooltip.contains("/orders/list"));
+}
+
+#[test]
+fn copy_handler_and_debug_duration_ms_work_as_expected() {
+    use apifox_helper_openidea::plugin::schema_example;
+
+    let h = MockHost::install().with_capabilities(&[
+        "project.read",
+        "editor.read",
+        "storage",
+        "clipboard",
+        "net:localhost",
+    ]);
+    h.on_fetch(|_| {
+        Ok(openidea_plugin::HttpResponse {
+            status: 200,
+            headers: vec![("content-type".into(), "application/json".into())],
+            body: br#"{"ok":true}"#.to_vec(),
+        })
+    });
+    let mut plugin = ApifoxHelper;
+
+    plugin
+        .handle(
+            "apifox",
+            ViewEvent::Message(
+                json!({"op":"copy","text":"curl http://localhost:8080/ping","label":"cURL","projectRoot":"/project"})
+                    .to_string(),
+            ),
+            &h.invocation(),
+        )
+        .unwrap();
+    let notice: Value = serde_json::from_str(&h.view_messages().last().unwrap().1).unwrap();
+    assert_eq!(notice["op"], "notice");
+
+    plugin
+        .handle(
+            "apifox",
+            ViewEvent::Message(
+                json!({"op":"debug","method":"GET","url":"http://localhost:8080/ping","headers":[],"body":"","projectRoot":"/project"})
+                    .to_string(),
+            ),
+            &h.invocation(),
+        )
+        .unwrap();
+    let resp: Value = serde_json::from_str(&h.view_messages().last().unwrap().1).unwrap();
+    assert_eq!(resp["op"], "response");
+    assert!(
+        resp["response"]["durationMs"].is_number(),
+        "response: {resp}"
+    );
+
+    let ex = schema_example(
+        &json!({}),
+        &json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "example": "alice"},
+                "count": {"type": "integer"}
+            }
+        }),
+    );
+    assert_eq!(ex["name"], "alice");
+    assert_eq!(ex["count"], 0);
+}
+
+#[test]
+fn open_panel_and_debug_commands_sync_cursor_endpoint_focus() {
+    let h = MockHost::install();
+    let code = "package demo;\nimport org.springframework.web.bind.annotation.*;\n@RestController\npublic class FocusController {\n    @GetMapping(\"/first\")\n    public String first() { return \"1\"; }\n    @PostMapping(\"/second\")\n    public String second() { return \"2\"; }\n}\n";
+    h.add_file("src/FocusController.java", code);
+    // Line 6 (0-based) or 7 -> inside `second()`
+    h.open_editor(
+        "/project/src/FocusController.java",
+        "java",
+        code,
+        &[(6, 4, 6, 4)],
+    );
+
+    let mut plugin = ApifoxHelper;
+    plugin.run_command("debug", &h.invocation(), None).unwrap();
+
+    let focus_msg: Value = h
+        .view_messages()
+        .iter()
+        .filter_map(|(_, raw)| serde_json::from_str::<Value>(raw).ok())
+        .find(|v| v["op"] == "focus-endpoint")
+        .expect("focus-endpoint push message");
+    assert_eq!(focus_msg["tab"], "debug");
+    assert!(
+        focus_msg["operationId"]
+            .as_str()
+            .unwrap_or("")
+            .contains("second"),
+        "focus_msg: {focus_msg}"
+    );
+
+    // Next render consumes INITIAL focusOperationId / focusTab cleanly
+    plugin
+        .run_command("open-panel", &h.invocation(), None)
+        .unwrap();
+    let view = plugin.render("apifox", None, &h.invocation()).unwrap();
+    if let Body::Html(html) = view.body {
+        assert!(
+            html.contains("focusOperationId"),
+            "rendered HTML missing initial focus"
+        );
+    } else {
+        panic!("expected HTML view");
+    }
 }

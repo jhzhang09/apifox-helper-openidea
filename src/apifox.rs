@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub private_api_url: String,
     pub project_id: String,
     pub project_name: String,
     pub team_name: String,
@@ -16,10 +17,15 @@ pub struct Config {
     pub overwrite: String,
     pub title: String,
     pub base_url: String,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub module_urls: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub global_headers: String,
 }
 impl Default for Config {
     fn default() -> Self {
         Self {
+            private_api_url: String::new(),
             project_id: String::new(),
             project_name: String::new(),
             team_name: String::new(),
@@ -30,11 +36,42 @@ impl Default for Config {
             overwrite: "AUTO_MERGE".into(),
             title: "API 文档".into(),
             base_url: "http://localhost:8080".into(),
+            module_urls: Default::default(),
+            global_headers: String::new(),
         }
     }
 }
 
 impl Config {
+    pub fn server(&self) -> Result<String, Error> {
+        let raw = self.private_api_url.trim();
+        if raw.is_empty() {
+            return Ok("https://api.apifox.com".into());
+        }
+        let address =
+            url::Url::parse(raw).map_err(|_| Error::Invalid("私有化 API 地址无效".into()))?;
+        if !raw.starts_with("https://")
+            || raw.contains(['\\', '\r', '\n', '\t'])
+            || address.host().is_none()
+            || !address.username().is_empty()
+            || address.password().is_some()
+            || address.query().is_some()
+            || address.fragment().is_some()
+        {
+            return Err("请输入 HTTPS API 根地址，不含账号、密码、查询参数或片段".into());
+        }
+        Ok(address.as_str().trim_end_matches('/').into())
+    }
+    pub fn token_name(&self) -> &'static str {
+        if self.private_api_url.trim().is_empty() {
+            "apifox_token"
+        } else {
+            "apifox_private_token"
+        }
+    }
+    fn authorization(&self) -> String {
+        format!("Bearer {{{{secret:{}}}}}", self.token_name())
+    }
     /// 切换远端项目时清理其关联标识，同一项目保留已有配置。
     pub fn set_project_id(&mut self, id: &str) {
         let id = id.trim();
@@ -64,18 +101,22 @@ pub struct ProjectList {
 }
 
 /// 协议来源：本地官方 ApifoxHelper 2.1.2-262 的资源配置和字节码，不是公开 API 文档。
-pub fn project_list_request(teams: bool) -> HttpRequest {
-    HttpRequest {
+pub fn project_list_request(config: &Config, teams: bool) -> Result<HttpRequest, Error> {
+    let base = config.server()?;
+    Ok(HttpRequest {
         timeout_ms: Some(30_000),
-        ..HttpRequest::get(if teams {
-            "https://api.apifox.com/api/v1/user-teams?locale=zh-CN"
-        } else {
-            "https://api.apifox.com/api/v1/user-projects"
-        })
+        ..HttpRequest::get(&format!(
+            "{base}{}",
+            if teams {
+                "/api/v1/user-teams?locale=zh-CN"
+            } else {
+                "/api/v1/user-projects"
+            }
+        ))
         .header("X-Apifox-Version", "2024-03-28")
-        .header("Authorization", "Bearer {{secret:apifox_token}}")
+        .header("Authorization", &config.authorization())
         .header("Accept", "application/json")
-    }
+    })
 }
 fn list_data(status: u16, body: &str) -> Result<Vec<Value>, Error> {
     match status {
@@ -159,16 +200,21 @@ pub fn parse_teams(
     }
     Ok(teams)
 }
-pub fn list_projects() -> Result<ProjectList, Error> {
-    if !host::secret_is_set("apifox_token") {
-        return Err("请先在插件 Secrets 中配置 Apifox Access Token，并允许 secrets 与 net:api.apifox.com 权限".into());
+pub fn list_projects(config: &Config) -> Result<ProjectList, Error> {
+    let request = project_list_request(config, false)?;
+    if !host::secret_is_set(config.token_name()) {
+        return Err(format!(
+            "请在插件 Secrets 中设置 {}，并允许访问目标服务器",
+            config.token_name()
+        )
+        .into());
     }
-    let response = host::fetch(&project_list_request(false))?;
+    let response = host::fetch(&request)?;
     let mut projects = parse_projects(response.status, &response.text())?;
     let mut notices = Vec::new();
     if !projects.is_empty() {
-        let teams =
-            host::fetch(&project_list_request(true)).and_then(|r| parse_teams(r.status, &r.text()));
+        let teams = host::fetch(&project_list_request(config, true)?)
+            .and_then(|r| parse_teams(r.status, &r.text()));
         match teams {
             Ok(teams) => {
                 for project in &mut projects {
@@ -192,6 +238,7 @@ pub fn list_projects() -> Result<ProjectList, Error> {
 }
 impl Config {
     pub fn validate(&self) -> Result<(), Error> {
+        self.server()?;
         if self.project_id.is_empty() || !self.project_id.bytes().all(|c| c.is_ascii_digit()) {
             return Err("Apifox 项目 ID 必须是数字".into());
         }
@@ -204,6 +251,25 @@ impl Config {
         .contains(&self.overwrite.as_str())
         {
             return Err("无效的覆盖策略".into());
+        }
+        self.validate_headers()
+    }
+    pub fn validate_headers(&self) -> Result<(), Error> {
+        if !self.global_headers.trim().is_empty() {
+            let parsed: Value = serde_json::from_str(self.global_headers.trim())
+                .map_err(|_| Error::Invalid("公共请求头必须是有效的 JSON 对象".into()))?;
+            let obj = parsed
+                .as_object()
+                .ok_or_else(|| Error::Invalid("公共请求头必须是 JSON 键值对象".into()))?;
+            for (k, v) in obj {
+                let s = v
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| v.to_string());
+                if k.contains(['\r', '\n']) || s.contains(['\r', '\n']) || s.contains("{{secret:") {
+                    return Err("公共请求头无效，或试图将 Apifox 访问令牌用于接口调试".into());
+                }
+            }
         }
         Ok(())
     }
@@ -226,13 +292,14 @@ pub fn import_request(config: &Config, document: &Value) -> Result<HttpRequest, 
         timeout_ms: Some(60_000),
         ..HttpRequest::post(
             &format!(
-                "https://api.apifox.com/v1/projects/{}/import-openapi?locale=zh-CN",
+                "{}/v1/projects/{}/import-openapi?locale=zh-CN",
+                config.server()?,
                 config.project_id
             ),
             body,
         )
         .header("X-Apifox-Api-Version", "2024-03-28")
-        .header("Authorization", "Bearer {{secret:apifox_token}}")
+        .header("Authorization", &config.authorization())
         .header("Content-Type", "application/json")
     })
 }
@@ -273,8 +340,8 @@ pub fn outcome(status: u16, body: &str) -> Result<String, Error> {
     Ok(summary)
 }
 pub fn upload(config: &Config, doc: &Value) -> Result<String, Error> {
-    if !host::secret_is_set("apifox_token") {
-        return Err("请在插件详情的密钥配置中设置 Apifox Access Token".into());
+    if !host::secret_is_set(config.token_name()) {
+        return Err(format!("请在插件 Secrets 中设置 {}", config.token_name()).into());
     }
     let resp = host::fetch(&import_request(config, doc)?)?;
     outcome(resp.status, &resp.text())

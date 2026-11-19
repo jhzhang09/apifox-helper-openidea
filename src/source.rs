@@ -13,6 +13,7 @@ pub struct Annotation {
     pub args: BTreeMap<String, Vec<String>>,
     pub nested: BTreeMap<String, Vec<Annotation>>,
     pub expressions: BTreeSet<String>,
+    pub item_exprs: BTreeMap<String, Vec<bool>>,
 }
 impl Annotation {
     pub fn values(&self, key: &str) -> Vec<String> {
@@ -20,6 +21,13 @@ impl Annotation {
     }
     pub fn value(&self, key: &str) -> Option<String> {
         self.values(key).into_iter().next()
+    }
+    pub fn is_expr_item(&self, key: &str, index: usize) -> bool {
+        self.item_exprs
+            .get(key)
+            .and_then(|flags| flags.get(index))
+            .copied()
+            .unwrap_or_else(|| self.expressions.contains(key))
     }
     /// 说明文字只接受非空字面值，尚未求值的常量不能替换有效文档。
     pub fn text(&self, key: &str) -> Option<String> {
@@ -63,18 +71,31 @@ pub struct Method {
     pub end_line: u32,
 }
 #[derive(Clone, Debug, Default)]
+pub struct EnumVariant {
+    pub name: String,
+    pub doc: String,
+    pub annotations: Vec<Annotation>,
+    pub args: Vec<String>,
+    pub arg_literals: Vec<bool>,
+    pub arg_strings: Vec<bool>,
+}
+#[derive(Clone, Debug, Default)]
 pub struct Class {
     pub name: String,
     pub package: String,
     pub imports: Vec<String>,
+    pub static_imports: Vec<String>,
     pub path: String,
     pub annotations: Vec<Annotation>,
     pub doc: String,
     pub generics: Vec<String>,
     pub bases: Vec<String>,
+    pub interfaces: Vec<String>,
+    pub constants: BTreeMap<String, String>,
     pub fields: Vec<Field>,
     pub methods: Vec<Method>,
     pub variants: Vec<String>,
+    pub enum_items: Vec<EnumVariant>,
 }
 impl Class {
     pub fn qualified(&self) -> String {
@@ -259,6 +280,61 @@ fn unquote(s: &str) -> String {
     serde_json::from_str::<String>(s)
         .unwrap_or_else(|_| s.trim_matches(['"', '\'', '`']).to_string())
 }
+fn parse_annotation_elem(elem: &[Token]) -> (Option<String>, bool) {
+    let mut inner = elem;
+    if t(inner, 0) == "(" && paired(inner, 0) + 1 == inner.len() {
+        inner = &inner[1..inner.len() - 1];
+    }
+    if inner.is_empty() {
+        return (None, false);
+    }
+    let parts = split(inner, "+");
+    let all_strings = parts.iter().all(|p| {
+        p.len() == 1
+            && (p[0].text.starts_with('"') || (parts.len() > 1 && p[0].text.starts_with('\'')))
+    });
+    if all_strings {
+        let combined: String = parts.iter().map(|p| unquote(&p[0].text)).collect();
+        return (Some(combined), false);
+    }
+    if parts.len() == 1 {
+        let p = parts[0];
+        if p.len() == 1 && (p[0].text.starts_with('"') || p[0].text.starts_with('\'')) {
+            return (Some(unquote(&p[0].text)), false);
+        }
+        return (Some(joined(p)), true);
+    }
+    let mut expr_parts = Vec::with_capacity(parts.len());
+    for p in parts {
+        if p.len() == 1 && (p[0].text.starts_with('"') || p[0].text.starts_with('\'')) {
+            let Ok(lit) = serde_json::to_string(&unquote(&p[0].text)) else {
+                return (Some(joined(inner)), true);
+            };
+            expr_parts.push(lit);
+        } else {
+            expr_parts.push(joined(p));
+        }
+    }
+    (Some(expr_parts.join("+")), true)
+}
+
+fn unwrap_array_values(values: &[Token]) -> &[Token] {
+    if values.len() >= 2
+        && matches!(t(values, 0), "{" | "[")
+        && paired(values, 0) + 1 == values.len()
+    {
+        return &values[1..values.len() - 1];
+    }
+    if values.len() >= 3
+        && t(values, 0) == "arrayOf"
+        && t(values, 1) == "("
+        && paired(values, 1) + 1 == values.len()
+    {
+        return &values[2..values.len() - 1];
+    }
+    values
+}
+
 fn parse_annotation(ts: &[Token], start: usize) -> (Annotation, usize) {
     let mut i = start + 1;
     let mut name = t(ts, i).to_string();
@@ -282,6 +358,7 @@ fn parse_annotation(ts: &[Token], start: usize) -> (Annotation, usize) {
         args: BTreeMap::new(),
         nested: BTreeMap::new(),
         expressions: BTreeSet::new(),
+        item_exprs: BTreeMap::new(),
     };
     if t(ts, i) == "(" {
         let end = paired(ts, i);
@@ -303,34 +380,37 @@ fn parse_annotation(ts: &[Token], start: usize) -> (Annotation, usize) {
                 .map(|p| (joined(&part[..p]), &part[p + 1..]))
                 .unwrap_or(("value".into(), part));
             let mut vals = Vec::new();
+            let mut item_expr = Vec::new();
             let mut nested = Vec::new();
-            let mut n = 0;
-            while n < values.len() {
-                let s = t(values, n);
-                if s == "@" {
-                    let (child, end) = parse_annotation(values, n);
-                    nested.push(child);
-                    n = end;
+            let mut has_expr = false;
+            for elem in split(unwrap_array_values(values), ",") {
+                if elem.is_empty() {
                     continue;
-                } else if s.starts_with('"') || s.starts_with('\'') {
-                    vals.push(unquote(s));
-                } else if !matches!(s, "{" | "}" | "[" | "]" | "," | "(" | ")") {
-                    let mut v = s.to_string();
-                    while t(values, n + 1) == "." {
-                        v.push('.');
-                        v.push_str(t(values, n + 2));
-                        n += 2;
-                    }
-                    vals.push(v);
                 }
-                n += 1;
+                if t(elem, 0) == "@" {
+                    let mut n = 0;
+                    while n < elem.len() {
+                        if t(elem, n) == "@" {
+                            let (child, child_end) = parse_annotation(elem, n);
+                            nested.push(child);
+                            n = child_end;
+                        } else {
+                            n += 1;
+                        }
+                    }
+                    continue;
+                }
+                if let (Some(v), is_expr) = parse_annotation_elem(elem) {
+                    vals.push(v);
+                    item_expr.push(is_expr);
+                    has_expr |= is_expr;
+                }
             }
-            if values.iter().any(|v| {
-                !v.text.starts_with('"')
-                    && !v.text.starts_with('\'')
-                    && !matches!(v.text.as_str(), "{" | "}" | "[" | "]" | ",")
-            }) {
+            if has_expr {
                 a.expressions.insert(key.clone());
+            }
+            if !item_expr.is_empty() {
+                a.item_exprs.insert(key.clone(), item_expr);
             }
             if !nested.is_empty() {
                 a.nested.insert(key.clone(), nested);
@@ -435,9 +515,12 @@ pub fn parse(path: &str, source: &str) -> Vec<Class> {
     if !syntax_issues(&ts).is_empty() {
         return Vec::new();
     }
-    let mut classes = parse_tokens(path, &ts, "", &[], "");
+    let mut classes = parse_tokens(path, &ts, "", &[], &[], "");
     for class in &mut classes {
         qualify_annotations(&mut class.annotations, &class.imports);
+        for item in &mut class.enum_items {
+            qualify_annotations(&mut item.annotations, &class.imports);
+        }
         for field in &mut class.fields {
             qualify_annotations(&mut field.annotations, &class.imports);
         }
@@ -478,27 +561,232 @@ fn qualify_annotations(annotations: &mut [Annotation], imports: &[String]) {
     }
 }
 
+fn eval_enum_arg(slice: &[Token]) -> (String, bool, bool) {
+    let mut inner = slice;
+    if t(inner, 0) == "(" && paired(inner, 0) + 1 == inner.len() {
+        inner = &inner[1..inner.len() - 1];
+    }
+    if inner.is_empty() {
+        return (String::new(), false, false);
+    }
+    let parts = split(inner, "+");
+    if parts.iter().all(|p| {
+        p.len() == 1
+            && (p[0].text.starts_with('"') || (parts.len() > 1 && p[0].text.starts_with('\'')))
+    }) {
+        let combined: String = parts.iter().map(|p| unquote(&p[0].text)).collect();
+        return (combined, true, true);
+    }
+    if inner.len() == 1 && matches!(inner[0].text.as_str(), "true" | "false") {
+        return (inner[0].text.clone(), true, false);
+    }
+    if inner.len() == 1 && inner[0].text.starts_with('\'') {
+        return (unquote(&inner[0].text), true, true);
+    }
+    let raw = joined(inner);
+    let trimmed = raw.trim_end_matches(['L', 'l', 'F', 'f', 'D', 'd']);
+    let digits = trimmed.strip_prefix('-').unwrap_or(trimmed);
+    if digits.chars().next().is_some_and(|c| c.is_ascii_digit())
+        && (trimmed.parse::<i64>().is_ok() || trimmed.parse::<f64>().is_ok())
+    {
+        return (trimmed.to_string(), true, false);
+    }
+    (String::new(), false, false)
+}
+
+fn extract_const_expr(ts: &[Token]) -> Option<String> {
+    if ts.is_empty()
+        || ts
+            .iter()
+            .any(|tok| matches!(tok.text.as_str(), ";" | "{" | "}" | "(" | ")"))
+    {
+        return None;
+    }
+    let parts = split(ts, "+");
+    let mut out = Vec::with_capacity(parts.len());
+    for part in parts {
+        if part.is_empty() {
+            return None;
+        }
+        if part.len() == 1 && (part[0].text.starts_with('"') || part[0].text.starts_with('\'')) {
+            out.push(serde_json::to_string(&unquote(&part[0].text)).ok()?);
+        } else if part.first().is_some_and(|tok| {
+            tok.text != "."
+                && tok
+                    .text
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
+        }) && part.last().is_some_and(|tok| tok.text != ".")
+            && part.iter().all(|tok| {
+                tok.text == "."
+                    || tok
+                        .text
+                        .chars()
+                        .next()
+                        .is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$')
+            })
+        {
+            out.push(joined(part));
+        } else {
+            return None;
+        }
+    }
+    Some(out.join("+"))
+}
+
+fn parse_kotlin_val_stmt(ts: &[Token], n: usize, limit: usize) -> usize {
+    let mut e = n + 1;
+    let mut paren = 0usize;
+    while e < limit && t(ts, e) != ";" {
+        if e > n + 1
+            && paren == 0
+            && ts[e].line > ts[e - 1].line
+            && !matches!(t(ts, e - 1), "+" | "=")
+            && t(ts, e) != "+"
+        {
+            break;
+        }
+        match t(ts, e) {
+            "(" | "<" | "[" => paren += 1,
+            ")" | ">" | "]" if paren > 0 => paren -= 1,
+            _ => (),
+        }
+        e += 1;
+    }
+    e
+}
+
+fn extract_kotlin_constant(decl: &[Token], allow_plain: bool) -> Option<(String, String)> {
+    if !allow_plain || decl.len() < 4 || t(decl, 0) != "val" {
+        return None;
+    }
+    let name = t(decl, 1).trim_matches('`').to_string();
+    if t(decl, 2) == "=" {
+        return extract_const_expr(&decl[3..]).map(|expr| (name, expr));
+    }
+    if t(decl, 2) == ":"
+        && let Some(eq) = decl[3..].iter().position(|tok| tok.text == "=")
+    {
+        let ty = joined(&without_type_annotations(&decl[3..3 + eq]));
+        if ty.rsplit('.').next() == Some("String") || ty == "CharSequence" {
+            return extract_const_expr(&decl[3 + eq + 1..]).map(|expr| (name, expr));
+        }
+    }
+    None
+}
+
+fn parse_base_clauses(
+    slice: &[Token],
+    is_interface: bool,
+    kotlin: bool,
+    bases: &mut Vec<String>,
+    interfaces: &mut Vec<String>,
+) {
+    if kotlin {
+        let Some(colon) = slice.iter().position(|x| x.text == ":") else {
+            return;
+        };
+        let mut end = slice.len();
+        let mut p = colon + 1;
+        while p < slice.len() {
+            if matches!(t(slice, p), "(" | "<") {
+                p = paired(slice, p) + 1;
+                continue;
+            }
+            if t(slice, p) == "where" {
+                end = p;
+                break;
+            }
+            p += 1;
+        }
+        for v in split(&slice[colon + 1..end], ",") {
+            let cut = v.iter().position(|x| x.text == "(").unwrap_or(v.len());
+            if cut > 0 {
+                let name = joined(&without_type_annotations(&v[..cut]));
+                if !name.is_empty() {
+                    if is_interface {
+                        interfaces.push(name);
+                    } else {
+                        bases.push(name);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    let (mut ext, mut imp, mut permits) = (None, None, None);
+    let mut p = 0;
+    while p < slice.len() {
+        if matches!(t(slice, p), "(" | "<") {
+            p = paired(slice, p) + 1;
+            continue;
+        }
+        match t(slice, p) {
+            "extends" if ext.is_none() => ext = Some(p),
+            "implements" if imp.is_none() => imp = Some(p),
+            "permits" if permits.is_none() => permits = Some(p),
+            _ => (),
+        }
+        p += 1;
+    }
+    if let Some(start) = ext {
+        let end = imp.or(permits).unwrap_or(slice.len());
+        if start + 1 < end {
+            for v in split(&slice[start + 1..end], ",") {
+                let name = joined(&without_type_annotations(v));
+                if !name.is_empty() {
+                    if is_interface {
+                        interfaces.push(name);
+                    } else {
+                        bases.push(name);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(start) = imp {
+        let end = permits.unwrap_or(slice.len());
+        if start + 1 < end {
+            for v in split(&slice[start + 1..end], ",") {
+                let name = joined(&without_type_annotations(v));
+                if !name.is_empty() {
+                    interfaces.push(name);
+                }
+            }
+        }
+    }
+}
+
 fn parse_tokens(
     path: &str,
     ts: &[Token],
     inherited_package: &str,
     inherited_imports: &[String],
+    inherited_static_imports: &[String],
     outer: &str,
 ) -> Vec<Class> {
     let kotlin = path.ends_with(".kt");
     let mut package = inherited_package.to_string();
     let mut imports = inherited_imports.to_vec();
+    let mut static_imports = inherited_static_imports.to_vec();
     let mut i = 0;
     while i < ts.len() {
         if matches!(t(ts, i), "package" | "import") {
             let imp = t(ts, i) == "import";
             i += 1;
+            let is_static = imp && t(ts, i) == "static";
+            if is_static {
+                i += 1;
+            }
             let start = i;
             while i < ts.len() && t(ts, i) != ";" && (i == start || ts[i].line == ts[start].line) {
                 i += 1;
             }
             let s = joined(&ts[start..i]);
-            if imp {
+            if is_static {
+                static_imports.push(s);
+            } else if imp {
                 imports.push(s);
             } else {
                 package = s;
@@ -508,16 +796,27 @@ fn parse_tokens(
         }
     }
     let mut classes = Vec::new();
+    let mut file_constants = BTreeMap::new();
     i = 0;
     while i < ts.len() {
         let (a, d, n) = prefix(ts, i);
+        if kotlin && outer.is_empty() && matches!(t(ts, n), "val" | "var") {
+            let e = parse_kotlin_val_stmt(ts, n, ts.len());
+            if let Some((k, v)) = extract_kotlin_constant(&ts[n..e], true) {
+                file_constants.entry(k).or_insert(v);
+            }
+            i = if t(ts, e) == ";" { e + 1 } else { e.max(n + 1) };
+            continue;
+        }
         let mut cstart = n;
         if matches!(t(ts, cstart), "data" | "enum" | "annotation" | "sealed")
             && t(ts, cstart + 1) == "class"
         {
             cstart += 1;
         }
-        if !matches!(t(ts, cstart), "class" | "interface" | "record" | "enum") {
+        let is_named_object =
+            kotlin && t(ts, cstart) == "object" && !matches!(t(ts, cstart + 1), "" | ":" | "{");
+        if !matches!(t(ts, cstart), "class" | "interface" | "record" | "enum") && !is_named_object {
             i = n.max(i + 1);
             continue;
         }
@@ -528,12 +827,14 @@ fn parse_tokens(
             name: format!("{outer}{}", t(ts, cstart + 1)),
             package: package.clone(),
             imports: imports.clone(),
+            static_imports: static_imports.clone(),
             path: path.into(),
             annotations: a,
             doc: d,
             ..Default::default()
         };
         let is_enum = t(ts, cstart) == "enum" || t(ts, cstart.saturating_sub(1)) == "enum";
+        let is_interface = t(ts, cstart) == "interface";
         let mut p = (cstart + 2).min(ts.len());
         if t(ts, p) == "<" {
             let e = paired(ts, p);
@@ -558,26 +859,19 @@ fn parse_tokens(
         while p < ts.len() && !matches!(t(ts, p), "{" | ";") {
             if kotlin
                 && ts[p].line > ts[cstart].line
-                && matches!(t(ts, p), "@" | "class" | "data" | "interface")
+                && matches!(t(ts, p), "@" | "class" | "data" | "interface" | "object")
             {
                 break;
             }
             p += 1;
         }
-        if let Some(b) = ts[base_start..p]
-            .iter()
-            .position(|x| matches!(x.text.as_str(), "extends" | ":"))
-        {
-            for v in split(&ts[base_start + b + 1..p], ",") {
-                let end = v
-                    .iter()
-                    .position(|x| matches!(x.text.as_str(), "(" | "implements"))
-                    .unwrap_or(v.len());
-                if end > 0 {
-                    c.bases.push(joined(&v[..end]));
-                }
-            }
-        }
+        parse_base_clauses(
+            &ts[base_start..p],
+            is_interface,
+            kotlin,
+            &mut c.bases,
+            &mut c.interfaces,
+        );
         if t(ts, p) != "{" {
             classes.push(c);
             i = p.max(cstart + 2);
@@ -588,17 +882,51 @@ fn parse_tokens(
         if is_enum {
             let start = m;
             while m < body_end && !matches!(t(ts, m), ";" | "}") {
-                if t(ts, m) == "(" {
+                if matches!(t(ts, m), "(" | "{") {
                     m = paired(ts, m);
                 }
                 m += 1;
             }
-            c.variants = split(&ts[start..m], ",")
-                .iter()
-                .filter_map(|v| v.first())
-                .map(|v| v.text.clone())
-                .collect();
-            m += 1;
+            for v in split(&ts[start..m], ",") {
+                let (anns, doc, idx) = prefix(v, 0);
+                if idx >= v.len() || matches!(t(v, idx), ";" | "}") {
+                    continue;
+                }
+                let name = t(v, idx).to_string();
+                if !name
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_alphabetic() || ch == '_' || ch == '$')
+                {
+                    continue;
+                }
+                let mut args = Vec::new();
+                let mut arg_literals = Vec::new();
+                let mut arg_strings = Vec::new();
+                if t(v, idx + 1) == "(" {
+                    let arg_end = paired(v, idx + 1);
+                    if arg_end < v.len() {
+                        for arg_slice in split(&v[idx + 2..arg_end], ",") {
+                            let (val, lit, is_str) = eval_enum_arg(arg_slice);
+                            args.push(val);
+                            arg_literals.push(lit);
+                            arg_strings.push(is_str);
+                        }
+                    }
+                }
+                c.variants.push(name.clone());
+                c.enum_items.push(EnumVariant {
+                    name,
+                    doc,
+                    annotations: anns,
+                    args,
+                    arg_literals,
+                    arg_strings,
+                });
+            }
+            if t(ts, m) == ";" {
+                m += 1;
+            }
         }
         while m < body_end {
             if t(ts, m) == ";" {
@@ -613,10 +941,11 @@ fn parse_tokens(
                 m = paired(ts, n) + 1;
                 continue;
             }
-            if matches!(
-                t(ts, n),
-                "class" | "interface" | "object" | "enum" | "companion" | "record" | "data"
-            ) {
+            if matches!(t(ts, n), "class" | "interface" | "enum" | "record")
+                || (kotlin
+                    && (matches!(t(ts, n), "object" | "companion")
+                        || (t(ts, n) == "data" && t(ts, n + 1) == "class")))
+            {
                 let mut e = n;
                 while e < body_end && t(ts, e) != "{" {
                     e += 1;
@@ -626,12 +955,65 @@ fn parse_tokens(
                 } else {
                     body_end
                 };
-                if !matches!(t(ts, n), "object" | "companion") {
+                if t(ts, n) == "companion" && e < body_end {
+                    let mut companion_constants = BTreeMap::new();
+                    let mut cm = e + 1;
+                    while cm < end - 1 {
+                        let (_, _, cn) = prefix(ts, cm);
+                        if cn >= end - 1 {
+                            break;
+                        }
+                        if matches!(t(ts, cn), "val" | "var") {
+                            let ce = parse_kotlin_val_stmt(ts, cn, end - 1);
+                            if let Some((k, v)) = extract_kotlin_constant(&ts[cn..ce], true) {
+                                companion_constants.insert(k, v);
+                            }
+                            cm = if t(ts, ce) == ";" {
+                                ce + 1
+                            } else {
+                                ce.max(cn + 1)
+                            };
+                        } else if t(ts, cn) == "{" {
+                            cm = paired(ts, cn) + 1;
+                        } else {
+                            cm = cn + 1;
+                        }
+                    }
+                    for (k, v) in &companion_constants {
+                        c.constants.insert(k.clone(), v.clone());
+                    }
+                    if t(ts, n + 1) == "object"
+                        && !matches!(t(ts, n + 2), "" | ":" | "{")
+                        && !companion_constants.is_empty()
+                    {
+                        classes.push(Class {
+                            name: format!("{}.{}", c.name, t(ts, n + 2)),
+                            package: package.clone(),
+                            imports: imports.clone(),
+                            static_imports: static_imports.clone(),
+                            path: path.into(),
+                            constants: companion_constants,
+                            ..Default::default()
+                        });
+                    }
+                } else if t(ts, n) == "object" {
+                    if !matches!(t(ts, n + 1), "" | ":" | "{") {
+                        classes.extend(parse_tokens(
+                            path,
+                            &ts[m..end],
+                            &package,
+                            &imports,
+                            &static_imports,
+                            &format!("{}.", c.name),
+                        ));
+                    }
+                } else if t(ts, n) != "companion" {
                     classes.extend(parse_tokens(
                         path,
                         &ts[m..end],
                         &package,
                         &imports,
+                        &static_imports,
                         &format!("{}.", c.name),
                     ));
                 }
@@ -639,16 +1021,22 @@ fn parse_tokens(
                 continue;
             }
             if kotlin && matches!(t(ts, n), "val" | "var") {
-                let mut e = n + 1;
-                while e < body_end && ts[e].line == ts[n].line && t(ts, e) != ";" {
-                    e += 1;
+                let is_const = ts[m..n].iter().any(|x| x.text == "const");
+                let e = parse_kotlin_val_stmt(ts, n, body_end);
+                if (is_const || is_named_object)
+                    && let Some((k, v)) = extract_kotlin_constant(&ts[n..e], true)
+                {
+                    c.constants.insert(k, v);
                 }
-                if let Some(mut f) = field(&ts[n..e], true) {
+                if !is_const
+                    && !is_named_object
+                    && let Some(mut f) = field(&ts[n..e], true)
+                {
                     f.annotations = anns;
                     f.doc = docs;
                     c.fields.push(f);
                 }
-                m = e;
+                m = if t(ts, e) == ";" { e + 1 } else { e.max(n + 1) };
                 continue;
             }
             let mut par = n;
@@ -730,9 +1118,20 @@ fn parse_tokens(
                     }
                     end += 1;
                 }
-                if !ts[m..end]
-                    .iter()
-                    .any(|x| matches!(x.text.as_str(), "static" | "transient"))
+                let is_static = ts[m..end].iter().any(|x| x.text == "static");
+                let is_transient = ts[m..end].iter().any(|x| x.text == "transient");
+                if (is_static || is_interface)
+                    && !kotlin
+                    && t(ts, par) == "="
+                    && let Some(f) = field(&ts[n..end], false)
+                    && (f.ty.rsplit('.').next() == Some("String") || f.ty == "CharSequence")
+                    && let Some(expr) = extract_const_expr(&ts[par + 1..end])
+                {
+                    c.constants.insert(f.name, expr);
+                }
+                if !is_interface
+                    && !is_static
+                    && !is_transient
                     && let Some(mut f) = field(&ts[n..end], false)
                 {
                     f.annotations = anns;
@@ -744,6 +1143,16 @@ fn parse_tokens(
         }
         classes.push(c);
         i = body_end + 1;
+    }
+    if !file_constants.is_empty() {
+        for class in &mut classes {
+            for (k, v) in &file_constants {
+                class
+                    .constants
+                    .entry(k.clone())
+                    .or_insert_with(|| v.clone());
+            }
+        }
     }
     classes
 }

@@ -528,3 +528,333 @@ class BdsCoordinate{private double latitude;private double longitude;private Dou
         json!(["latitude", "longitude", "altitude"])
     );
 }
+
+#[test]
+fn resolves_route_constants_and_plus_concatenation_across_java_and_kotlin() {
+    let result = export(&[
+        (
+            "src/main/java/demo/ApiRoutes.java",
+            r#"
+package demo;
+public interface ApiRoutes {
+    String PREFIX = "/api";
+    String USERS = "/users";
+}
+"#,
+        ),
+        (
+            "src/main/kotlin/demo/KtRoutes.kt",
+            r#"
+package demo
+object KtRoutes {
+    const val V1 = "/v1"
+}
+class KtConstants {
+    companion object {
+        const val ITEMS = "/items"
+    }
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/MixedController.java",
+            r#"
+package demo;
+import static demo.ApiRoutes.PREFIX;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping(PREFIX + KtRoutes.V1)
+public class MixedController {
+    private static final String DETAIL = "/detail";
+
+    @GetMapping(ApiRoutes.USERS + DETAIL)
+    public String listUsers() { return ""; }
+
+    @PostMapping(KtConstants.ITEMS + "/create")
+    public String createItem() { return ""; }
+}
+"#,
+        ),
+    ]);
+
+    assert!(
+        result.warnings.is_empty(),
+        "warnings: {:?}",
+        result.warnings
+    );
+    let paths: Vec<&str> = result.endpoints.iter().map(|e| e.path.as_str()).collect();
+    assert!(paths.contains(&"/api/v1/users/detail"), "paths: {paths:?}");
+    assert!(paths.contains(&"/api/v1/items/create"), "paths: {paths:?}");
+}
+
+#[test]
+fn inherited_overloads_resolve_in_their_declaration_package() {
+    let result = export(&[
+        (
+            "a/Base.java",
+            "package a; public class Base<T> {\n@GetMapping(\"/text\") public Item find(String id){return null;}\n@GetMapping(\"/typed\") public T find(T id){return null;} }",
+        ),
+        (
+            "a/Item.java",
+            "package a; public class Item { public String expected; }",
+        ),
+        (
+            "b/Item.java",
+            "package b; public class Item { public String other; }",
+        ),
+        (
+            "b/C.java",
+            "package b; import a.Base; @RestController public class C extends Base<Item> {\n@Override public Item find(Item id){return null;} }",
+        ),
+    ]);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.endpoints.len(), 2);
+    for (path, field, declaration) in [
+        ("/text", "expected", Some("a/Base.java")),
+        ("/typed", "other", None),
+    ] {
+        let endpoint = result.endpoints.iter().find(|ep| ep.path == path).unwrap();
+        assert_eq!(endpoint.file, "b/C.java");
+        assert_eq!(endpoint.declaration_file.as_deref(), declaration);
+        assert_eq!(endpoint.line, 1);
+        let schema =
+            &endpoint.operation["responses"]["200"]["content"]["application/json"]["schema"];
+        assert!(
+            follow(&result.document, schema)["properties"]
+                .get(field)
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn merges_controller_interface_and_generic_superclass_endpoints() {
+    let result = export(&[
+        (
+            "src/main/java/demo/OrderDto.java",
+            r#"
+package demo;
+public class OrderDto {
+    /** 订单号 */
+    public String orderNo;
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/UserApi.java",
+            r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+@RequestMapping("/api/users")
+public interface UserApi {
+    /** 根据编号查用户 */
+    @GetMapping("/{id}")
+    OrderDto findById(@PathVariable("id") String id);
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/UserApiImpl.java",
+            r#"
+package demo;
+import org.springframework.web.bind.annotation.RestController;
+@RestController
+public class UserApiImpl implements UserApi {
+    @Override
+    public OrderDto findById(String id) { return null; }
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/BaseController.java",
+            r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+public abstract class BaseController<T> {
+    @GetMapping("/{id}")
+    public T detail(@PathVariable("id") Long id) { return null; }
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/OrderController.java",
+            r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/api/orders")
+public class OrderController extends BaseController<OrderDto> {}
+"#,
+        ),
+    ]);
+
+    assert!(
+        result.warnings.is_empty(),
+        "warnings: {:?}",
+        result.warnings
+    );
+    let user_ep = result
+        .endpoints
+        .iter()
+        .find(|e| e.path == "/api/users/{id}")
+        .expect("inherited interface endpoint");
+    assert_eq!(user_ep.operation["summary"], "根据编号查用户");
+    assert_eq!(user_ep.operation["parameters"][0]["in"], "path");
+    assert_eq!(user_ep.operation["parameters"][0]["name"], "id");
+
+    let order_ep = result
+        .endpoints
+        .iter()
+        .find(|e| e.path == "/api/orders/{id}")
+        .expect("generic base endpoint");
+    let schema = &order_ep.operation["responses"]["200"]["content"]["application/json"]["schema"];
+    let resolved = follow(&result.document, schema);
+    assert!(
+        resolved["properties"].get("orderNo").is_some(),
+        "resolved: {resolved}"
+    );
+}
+
+#[test]
+fn extracts_enum_json_value_descriptions_and_jackson_class_annotations() {
+    let result = export(&[
+        (
+            "src/main/java/demo/OrderStatus.java",
+            r#"
+package demo;
+import com.fasterxml.jackson.annotation.JsonValue;
+public enum OrderStatus {
+    /** 待支付 */
+    PENDING(1),
+    /** 已完成 */
+    DONE(2);
+
+    @JsonValue
+    private final int code;
+    OrderStatus(int code) { this.code = code; }
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/SnakeBody.java",
+            r#"
+package demo;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.PropertyNamingStrategies;
+import com.fasterxml.jackson.databind.annotation.JsonNaming;
+@JsonIgnoreProperties({"internalSecret"})
+@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
+public class SnakeBody {
+    /** 名 */
+    public String firstName;
+    public String internalSecret;
+    public OrderStatus status;
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/SnakeController.java",
+            r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/snake")
+public class SnakeController {
+    @PostMapping("/test")
+    public SnakeBody test(@RequestBody SnakeBody body) { return body; }
+}
+"#,
+        ),
+    ]);
+
+    assert!(
+        result.warnings.is_empty(),
+        "warnings: {:?}",
+        result.warnings
+    );
+    let ep = &result.endpoints[0];
+    let body_schema = follow(
+        &result.document,
+        &ep.operation["requestBody"]["content"]["application/json"]["schema"],
+    );
+    let snake_props = body_schema["properties"]
+        .as_object()
+        .expect("SnakeBody props");
+    assert!(
+        snake_props.contains_key("first_name"),
+        "props: {snake_props:?}"
+    );
+    assert!(
+        !snake_props.contains_key("internalSecret") && !snake_props.contains_key("internal_secret")
+    );
+
+    let status_schema = follow(&result.document, &snake_props["status"]);
+    assert_eq!(status_schema["type"], "integer");
+    assert_eq!(status_schema["enum"], json!([1, 2]));
+    let x_enum = status_schema["x-apifox-enum"].to_string();
+    assert!(
+        x_enum.contains("待支付") && x_enum.contains("已完成"),
+        "x-apifox-enum: {x_enum}"
+    );
+}
+
+#[test]
+fn supports_operation_tags_header_parameter_and_model_attribute_descriptions() {
+    let result = export(&[
+        (
+            "src/main/java/demo/SearchQuery.java",
+            r#"
+package demo;
+public class SearchQuery {
+    /** 搜索关键词 */
+    public String keyword;
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/TagController.java",
+            r#"
+package demo;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.enums.ParameterIn;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/items")
+public class TagController {
+    @Operation(summary = "查询条目", tags = {"条目管理", "公开接口"})
+    @GetMapping
+    public String list(
+        @Parameter(name = "X-Trace-Id", in = ParameterIn.HEADER, description = "链路追踪ID") String traceId,
+        @ModelAttribute SearchQuery query
+    ) {
+        return "";
+    }
+}
+"#,
+        ),
+    ]);
+
+    assert!(
+        result.warnings.is_empty(),
+        "warnings: {:?}",
+        result.warnings
+    );
+    let ep = &result.endpoints[0];
+    assert_eq!(ep.operation["tags"], json!(["条目管理", "公开接口"]));
+    let params = ep.operation["parameters"].as_array().expect("parameters");
+    let header_p = params
+        .iter()
+        .find(|p| p["name"] == "X-Trace-Id")
+        .expect("header param");
+    assert_eq!(header_p["in"], "header");
+    assert_eq!(header_p["description"], "链路追踪ID");
+    let query_p = params
+        .iter()
+        .find(|p| p["name"] == "keyword")
+        .expect("query param");
+    assert_eq!(query_p["in"], "query");
+    assert_eq!(query_p["description"], "搜索关键词");
+}

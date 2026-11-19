@@ -96,6 +96,12 @@ pub struct Schemas<'a> {
     pub warnings: BTreeSet<String>,
     pub notices: BTreeSet<String>,
     active: BTreeSet<String>,
+    active_stack: Vec<String>,
+    pub component_warnings: BTreeMap<String, BTreeSet<String>>,
+    pub component_notices: BTreeMap<String, BTreeSet<String>>,
+    pub op_warnings: BTreeSet<String>,
+    pub op_notices: BTreeSet<String>,
+    pub op_touched: BTreeSet<String>,
     types: BTreeMap<String, Type>,
     project: crate::project::ProjectContext,
 }
@@ -110,8 +116,41 @@ impl<'a> Schemas<'a> {
             warnings: BTreeSet::new(),
             notices: BTreeSet::new(),
             active: BTreeSet::new(),
+            active_stack: Vec::new(),
+            component_warnings: BTreeMap::new(),
+            component_notices: BTreeMap::new(),
+            op_warnings: BTreeSet::new(),
+            op_notices: BTreeSet::new(),
+            op_touched: BTreeSet::new(),
             types: BTreeMap::new(),
             project: project.clone(),
+        }
+    }
+    pub fn begin_operation(&mut self) {
+        self.op_warnings.clear();
+        self.op_notices.clear();
+        self.op_touched.clear();
+    }
+    pub fn warn(&mut self, msg: String) {
+        self.warnings.insert(msg.clone());
+        if let Some(key) = self.active_stack.last() {
+            self.component_warnings
+                .entry(key.clone())
+                .or_default()
+                .insert(msg);
+        } else {
+            self.op_warnings.insert(msg);
+        }
+    }
+    pub fn notice(&mut self, msg: String) {
+        self.notices.insert(msg.clone());
+        if let Some(key) = self.active_stack.last() {
+            self.component_notices
+                .entry(key.clone())
+                .or_default()
+                .insert(msg);
+        } else {
+            self.op_notices.insert(msg);
         }
     }
     pub fn resolve(&mut self, name: &str, ctx: &Class) -> Option<&'a Class> {
@@ -183,7 +222,7 @@ impl<'a> Schemas<'a> {
         candidates: BTreeSet<String>,
     ) -> Option<&'a Class> {
         if candidates.len() > 1 {
-            self.warnings.insert(format!(
+            self.warn(format!(
                 "类型 {name} 存在歧义（{}）：{}，未选择任一模型",
                 ctx.path,
                 candidates.into_iter().collect::<Vec<_>>().join("、")
@@ -203,7 +242,7 @@ impl<'a> Schemas<'a> {
             ..ty.clone()
         }
     }
-    fn external_name(name: &str, ctx: &Class) -> String {
+    pub(crate) fn external_name(name: &str, ctx: &Class) -> String {
         if name.contains('.') {
             return name.into();
         }
@@ -243,7 +282,7 @@ impl<'a> Schemas<'a> {
     }
     fn inner(&mut self, ty: &Type, ctx: &Class) -> Value {
         if self.active.len() > 48 || self.components.len() > 2000 {
-            self.warnings.insert("模型展开达到上限，停止递归".into());
+            self.warn("模型展开达到上限，停止递归".into());
             return json!({"type":"object","x-apifox-unresolved":ty.signature()});
         }
         if ty.array > 0 {
@@ -309,7 +348,7 @@ impl<'a> Schemas<'a> {
             _ => (),
         }
         let Some(class) = self.resolve(&ty.name, ctx) else {
-            self.warnings.insert(format!(
+            self.warn(format!(
                 "无法解析类型 {}（{}），未推测字段",
                 ty.signature(),
                 ctx.path
@@ -321,15 +360,17 @@ impl<'a> Schemas<'a> {
         // 完整签名只作内部标识；导出时统一映射为可读模型名。
         let key = component_key(&signature);
         self.types.insert(key.clone(), resolved.clone());
+        self.op_touched.insert(key.clone());
         if !self.components.contains_key(&key) && !self.active.contains(&key) {
             self.active.insert(key.clone());
+            self.active_stack.push(key.clone());
             let bindings: BTreeMap<_, _> = class
                 .generics
                 .iter()
                 .enumerate()
                 .map(|(i, name)| {
                     let actual = resolved.args.get(i).cloned().unwrap_or_else(|| {
-                        self.notices.insert(format!(
+                        self.notice(format!(
                             "{} 未指定泛型参数 {name}，对应字段保留为开放结构（{}）",
                             class.name, class.path
                         ));
@@ -339,7 +380,7 @@ impl<'a> Schemas<'a> {
                 })
                 .collect();
             let shape = if !class.variants.is_empty() {
-                json!({"type":"string","enum":class.variants})
+                self.enum_schema(class)
             } else {
                 let mut properties = serde_json::Map::new();
                 let mut required = Vec::new();
@@ -373,9 +414,169 @@ impl<'a> Schemas<'a> {
                 shape["title"] = json!(title);
             }
             self.components.insert(key.clone(), shape);
+            self.active_stack.pop();
             self.active.remove(&key);
         }
         json!({"$ref":format!("#/components/schemas/{key}")})
+    }
+
+    fn enum_schema(&self, class: &Class) -> Value {
+        if class.enum_items.is_empty() {
+            return json!({"type":"string","enum":class.variants});
+        }
+        let json_val_target = class
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, f)| {
+                annotation(&f.annotations, "JsonValue")
+                    .is_some_and(|a| a.value("value").as_deref() != Some("false"))
+            })
+            .map(|(idx, f)| (idx, Type::parse(&f.ty)))
+            .or_else(|| {
+                class
+                    .methods
+                    .iter()
+                    .find(|m| {
+                        annotation(&m.annotations, "JsonValue")
+                            .is_some_and(|a| a.value("value").as_deref() != Some("false"))
+                    })
+                    .map(|m| {
+                        let stem = m
+                            .name
+                            .strip_prefix("get")
+                            .or_else(|| m.name.strip_prefix("is"))
+                            .unwrap_or(&m.name);
+                        let lower = stem
+                            .chars()
+                            .next()
+                            .map(|c| format!("{}{}", c.to_lowercase(), &stem[c.len_utf8()..]))
+                            .unwrap_or_default();
+                        let idx = class
+                            .fields
+                            .iter()
+                            .position(|f| f.name == lower || f.name == stem)
+                            .unwrap_or(0);
+                        (idx, Type::parse(&m.ty))
+                    })
+            });
+
+        let mut used_val_idx = None;
+        let mut out_type = json!("string");
+        let mut out_format: Option<&'static str> = None;
+        let mut values = Vec::new();
+
+        if let Some((idx, ty)) = json_val_target {
+            let primitive = match ty.simple() {
+                "int" | "Integer" | "Int" | "short" | "Short" | "byte" | "Byte" => {
+                    Some(("integer", Some("int32")))
+                }
+                "long" | "Long" | "BigInteger" => Some(("integer", Some("int64"))),
+                "float" | "Float" => Some(("number", Some("float"))),
+                "double" | "Double" | "BigDecimal" | "Number" => Some(("number", Some("double"))),
+                "boolean" | "Boolean" => Some(("boolean", None)),
+                "String" | "char" | "Character" | "Char" | "CharSequence" => Some(("string", None)),
+                _ => None,
+            };
+            if let Some((tname, fmt)) = primitive {
+                let mut extracted = Vec::with_capacity(class.enum_items.len());
+                let mut ok = true;
+                for item in &class.enum_items {
+                    if item.arg_literals.get(idx).copied() != Some(true) {
+                        ok = false;
+                        break;
+                    }
+                    let is_str = item.arg_strings.get(idx).copied().unwrap_or(false);
+                    let raw = &item.args[idx];
+                    let parsed = match tname {
+                        "integer" if !is_str => raw.parse::<i64>().ok().map(|v| json!(v)),
+                        "number" if !is_str => raw.parse::<f64>().ok().map(|v| json!(v)),
+                        "boolean" if !is_str => raw.parse::<bool>().ok().map(|v| json!(v)),
+                        "string" if is_str => Some(json!(raw)),
+                        _ => None,
+                    };
+                    if let Some(v) = parsed {
+                        extracted.push(v);
+                    } else {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ok && !extracted.is_empty() {
+                    used_val_idx = Some(idx);
+                    out_type = json!(tname);
+                    out_format = fmt;
+                    values = extracted;
+                }
+            }
+        }
+
+        if used_val_idx.is_none() {
+            values = class
+                .enum_items
+                .iter()
+                .map(|item| {
+                    let custom = [("JsonProperty", "value"), ("SerializedName", "value")]
+                        .into_iter()
+                        .find_map(|(a, k)| {
+                            annotation(&item.annotations, a).and_then(|a| a.text(k))
+                        });
+                    json!(custom.unwrap_or_else(|| item.name.clone()))
+                })
+                .collect();
+        }
+
+        let descriptions: Vec<Option<String>> = class
+            .enum_items
+            .iter()
+            .map(|item| {
+                crate::documentation::text(
+                    &item.annotations,
+                    &[("Schema", "description"), ("ApiModelProperty", "value")],
+                )
+                .or_else(|| source::nonempty(&source::summary(&item.doc)))
+                .or_else(|| {
+                    item.args
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| Some(*i) != used_val_idx)
+                        .filter(|(i, s)| {
+                            item.arg_strings.get(*i).copied().unwrap_or(false)
+                                && !s.trim().is_empty()
+                        })
+                        .map(|(_, s)| s.trim().to_string())
+                        .next_back()
+                })
+            })
+            .collect();
+
+        let mut obj = json!({"type": out_type, "enum": values});
+        if let Some(fmt) = out_format {
+            obj["format"] = json!(fmt);
+        }
+        let has_meta = used_val_idx.is_some()
+            || descriptions.iter().any(Option::is_some)
+            || values
+                .iter()
+                .zip(&class.enum_items)
+                .any(|(v, item)| v.as_str() != Some(item.name.as_str()));
+        if has_meta {
+            let entries: Vec<Value> = class
+                .enum_items
+                .iter()
+                .zip(values.iter())
+                .zip(descriptions.iter())
+                .map(|((item, val), desc)| {
+                    json!({
+                        "value": val,
+                        "name": item.name,
+                        "description": desc.as_deref().unwrap_or("")
+                    })
+                })
+                .collect();
+            obj["x-apifox-enum"] = json!(entries);
+        }
+        obj
     }
 
     fn hutool_tree(&mut self, ty: &Type, ctx: &Class) -> Value {
@@ -383,8 +584,10 @@ impl<'a> Schemas<'a> {
         resolved.name = "cn.hutool.core.lang.tree.Tree".into();
         let key = component_key(&resolved.signature());
         self.types.insert(key.clone(), resolved.clone());
+        self.op_touched.insert(key.clone());
         if !self.components.contains_key(&key) && !self.active.contains(&key) {
             self.active.insert(key.clone());
+            self.active_stack.push(key.clone());
             let id = resolved
                 .args
                 .first()
@@ -406,8 +609,9 @@ impl<'a> Schemas<'a> {
             }
             let order: Vec<_> = fields.keys().cloned().collect();
             self.components.insert(key.clone(),json!({"type":"object","properties":fields,"additionalProperties":{},"x-apifox-orders":order,"description":"Hutool Tree 节点，字段名按库默认值和项目全局默认配置解析，动态扩展字段保持开放"}));
+            self.notice("Hutool Tree 按 5.8.x 默认结构及项目全局字面量配置生成；局部定制字段和动态扩展字段需核对".into());
+            self.active_stack.pop();
             self.active.remove(&key);
-            self.notices.insert("Hutool Tree 按 5.8.x 默认结构及项目全局字面量配置生成；局部定制字段和动态扩展字段需核对".into());
         }
         json!({"$ref":format!("#/components/schemas/{key}")})
     }
@@ -427,6 +631,18 @@ impl<'a> Schemas<'a> {
             let ty = Type::parse(base).substitute(bindings);
             if matches!(
                 ty.simple(),
+                "Serializable"
+                    | "Comparable"
+                    | "Cloneable"
+                    | "AutoCloseable"
+                    | "Object"
+                    | "Any"
+                    | "Enum"
+            ) {
+                continue;
+            }
+            if matches!(
+                ty.simple(),
                 "Map"
                     | "HashMap"
                     | "LinkedHashMap"
@@ -441,7 +657,7 @@ impl<'a> Schemas<'a> {
                     .cloned()
                     .unwrap_or_else(|| Type::parse("Object"));
                 *additional = Some(self.schema(&value, class));
-                self.notices.insert(format!("{} 继承 Map，动态字段按 additionalProperties 保留，声明中未确定的键不会推测（{}）", class.name, class.path));
+                self.notice(format!("{} 继承 Map，动态字段按 additionalProperties 保留，声明中未确定的键不会推测（{}）", class.name, class.path));
             } else if let Some(parent) = self.resolve(&ty.name, class) {
                 let canonical = self.canonical(&ty, class);
                 let b = parent
@@ -452,10 +668,16 @@ impl<'a> Schemas<'a> {
                     .collect();
                 self.fields(parent, &b, props, required, additional, seen);
             } else {
-                self.warnings
-                    .insert(format!("无法解析父类型 {base}（{}）", class.path));
+                self.warn(format!("无法解析父类型 {base}（{}）", class.path));
             }
         }
+        let ignored_props: BTreeSet<String> =
+            annotation(&class.annotations, "JsonIgnoreProperties")
+                .map(|a| a.values("value").into_iter().collect())
+                .unwrap_or_default();
+        let naming_strategy = annotation(&class.annotations, "JsonNaming")
+            .and_then(|a| a.value("value"))
+            .unwrap_or_default();
         for f in &class.fields {
             if annotation(&f.annotations, "JsonIgnore")
                 .is_some_and(|a| a.value("value").as_deref() != Some("false"))
@@ -470,7 +692,7 @@ impl<'a> Schemas<'a> {
             {
                 continue;
             }
-            let name = [
+            let explicit_name = [
                 ("JsonProperty", "value"),
                 ("JSONField", "name"),
                 ("SerializedName", "value"),
@@ -478,8 +700,11 @@ impl<'a> Schemas<'a> {
             ]
             .into_iter()
             .find_map(|(a, k)| annotation(&f.annotations, a).and_then(|a| a.value(k)))
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| f.name.clone());
+            .filter(|n| !n.is_empty());
+            let name = explicit_name.unwrap_or_else(|| apply_naming(&f.name, &naming_strategy));
+            if ignored_props.contains(&f.name) || ignored_props.contains(&name) {
+                continue;
+            }
             let ty = Type::parse(&f.ty).substitute(bindings);
             let base = self.schema(&ty, class);
             let mut schema = if base.get("$ref").is_some() {
@@ -666,4 +891,53 @@ pub fn typed_value(s: &str, schema: &Value) -> Value {
         Some("boolean") => s.parse::<bool>().map(|v| json!(v)).unwrap_or(json!(s)),
         _ => json!(s),
     }
+}
+
+fn apply_naming(name: &str, strategy: &str) -> String {
+    if strategy.contains("SnakeCaseStrategy") {
+        to_delimited_case(name, '_')
+    } else if strategy.contains("KebabCaseStrategy") {
+        to_delimited_case(name, '-')
+    } else if strategy.contains("LowerCaseStrategy") {
+        name.to_lowercase()
+    } else if strategy.contains("UpperCamelCaseStrategy") {
+        let mut chars = name.chars();
+        match chars.next() {
+            Some(first) => format!("{}{}", first.to_uppercase(), chars.as_str()),
+            None => String::new(),
+        }
+    } else {
+        name.to_string()
+    }
+}
+
+fn to_delimited_case(name: &str, sep: char) -> String {
+    let mut out = String::new();
+    let mut prev_sep = true;
+    let chars: Vec<char> = name.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '_' || c == '-' {
+            if !prev_sep && !out.is_empty() {
+                out.push(sep);
+                prev_sep = true;
+            }
+            continue;
+        }
+        if c.is_uppercase() {
+            let prev_lower =
+                i > 0 && (chars[i - 1].is_lowercase() || chars[i - 1].is_ascii_digit());
+            let next_lower = chars.get(i + 1).is_some_and(|n| n.is_lowercase());
+            if !out.is_empty() && !prev_sep && (prev_lower || next_lower) {
+                out.push(sep);
+            }
+            for lc in c.to_lowercase() {
+                out.push(lc);
+            }
+            prev_sep = false;
+        } else {
+            out.push(c);
+            prev_sep = false;
+        }
+    }
+    out
 }

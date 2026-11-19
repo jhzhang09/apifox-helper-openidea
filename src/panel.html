@@ -201,6 +201,27 @@
       .form select {
         width: 100%;
       }
+      #debug .request-line {
+        display: grid;
+        grid-template-columns: max-content minmax(0, 1fr);
+        align-items: center;
+        gap: 6px;
+      }
+      #debug .request-line select {
+        width: auto;
+      }
+      #debug textarea {
+        min-height: 0;
+        max-height: 14em;
+        field-sizing: content;
+        resize: vertical;
+      }
+      @media (min-width: 300px) {
+        #debug .form > label {
+          grid-template-columns: 7em minmax(0, 1fr);
+          align-items: baseline;
+        }
+      }
       .hidden {
         display: none !important;
       }
@@ -574,6 +595,23 @@
         margin: 2px 0;
         font-size: 11px;
       }
+      @media (min-width: 300px) {
+        #settings .config-row,
+        #settings .project-field {
+          grid-template-columns: 8em minmax(0, 1fr);
+          align-items: center;
+          column-gap: 8px;
+        }
+        #settings .project-manual,
+        #project-change-status {
+          grid-column: 1 / -1;
+        }
+        #settings .project-current {
+          flex-flow: row wrap;
+          align-items: baseline;
+          gap: 2px 8px;
+        }
+      }
       @media (max-width: 480px) {
         .endpoint-row {
           grid-template-columns: minmax(0, 1fr);
@@ -595,18 +633,94 @@
           content: " / 路径";
         }
       }
+      .spec-toolbar,
+      .debug-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-bottom: 8px;
+      }
+      .spec-toolbar button,
+      .debug-actions button:not(#send) {
+        padding: 5px 8px;
+        font-size: 11px;
+      }
+      .debug-actions #send {
+        flex: 1;
+      }
+      .debug-params {
+        display: grid;
+        gap: 6px;
+        padding: 8px;
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        background: var(--surface);
+      }
+      .debug-params-title {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .debug-param-row {
+        display: grid;
+        grid-template-columns: minmax(70px, auto) 1fr;
+        gap: 8px;
+        align-items: center;
+      }
+      .param-badge {
+        display: inline-block;
+        font:
+          10px ui-monospace,
+          SFMono-Regular,
+          monospace;
+        padding: 1px 4px;
+        border: 1px solid var(--line);
+        border-radius: 3px;
+        color: var(--muted);
+        margin-left: 5px;
+      }
+      .constraint {
+        color: var(--muted);
+        font-size: 11px;
+        margin-left: 6px;
+      }
+      .enum-list {
+        margin: 4px 0 6px 8px;
+        padding-left: 10px;
+        border-left: 1px dashed var(--line);
+        font-size: 11px;
+      }
+      .diagnostic-link {
+        cursor: pointer;
+        text-decoration: underline;
+        text-decoration-style: dotted;
+      }
+      .diagnostic-link:hover {
+        color: var(--focus);
+      }
+      .endpoint-row.has-warning .endpoint-title::after {
+        content: " ⚠";
+        color: var(--accent);
+        font-size: 11px;
+      }
     </style>
   </head>
   <body>
     <header>
       <h1><span>Apifox</span> Helper</h1>
-      <button id="settings-toggle" aria-expanded="false">项目配置</button>
+      <button id="settings-toggle" aria-expanded="false">Apifox 设置</button>
     </header>
     <div id="settings" class="hidden" style="padding: 12px">
       <div class="form">
         <p id="config-project" class="hint">
           配置按当前本地项目保存，保存后下次自动载入。
         </p>
+        <label class="config-row"
+          >私有化 API 地址<input
+            id="private_api_url"
+            type="url"
+            placeholder="留空使用公网 SaaS"
+            title="填写管理员提供的 HTTPS API 根地址，可包含网关路径前缀"
+        /></label>
         <div class="project-field" id="project-field">
           <span id="project-field-label">同步项目</span>
           <button
@@ -665,33 +779,34 @@
           </div>
           <p id="project-change-status" class="hint hidden" role="status"></p>
         </div>
-        <label
-          >接口目录 ID（留空为根目录）<input
+        <label class="config-row"
+          >接口目录 ID<input
+            placeholder="留空为根目录"
             id="endpoint_folder"
             inputmode="numeric" /></label
-        ><label
-          >模型目录 ID（留空为根目录）<input
+        ><label class="config-row"
+          >模型目录 ID<input
+            placeholder="留空为根目录"
             id="schema_folder"
             inputmode="numeric" /></label
-        ><label
-          >分支 ID（留空为主分支）<input
+        ><label class="config-row"
+          >分支 ID<input
+            placeholder="留空为主分支"
             id="branch"
             inputmode="numeric" /></label
-        ><label
-          >模块 ID（留空为默认模块）<input
+        ><label class="config-row"
+          >模块 ID<input
+            placeholder="留空为默认模块"
             id="module"
             inputmode="numeric" /></label
-        ><label
+        ><label class="config-row"
           >已有文档的处理<select id="overwrite">
             <option value="AUTO_MERGE">自动合并</option>
             <option value="OVERWRITE_EXISTING">覆盖</option>
             <option value="KEEP_EXISTING">保留已有文档</option>
             <option value="CREATE_NEW">创建新文档</option>
           </select></label
-        ><label>文档标题<input id="title" /></label
-        ><label
-          >调试服务地址<input id="base_url" placeholder="http://localhost:8080"
-        /></label>
+        ><label class="config-row">文档标题<input id="title" /></label>
         <p id="token" class="hint"></p>
         <button id="save-config">保存项目配置</button>
       </div>
@@ -726,25 +841,66 @@
       </div>
       <div id="list" class="list">
         <div class="empty">
-          从源码生成接口文档，先预览响应模型，再同步到 Apifox。
+          从源码生成接口文档，先检查请求与响应模型，再同步到 Apifox。
         </div>
       </div>
       <p class="hint tree-help">
         右键文件夹或接口上传、导出；双击接口跳转源码。
       </p>
       <nav aria-label="接口详情">
-        <button data-tab="model" aria-selected="true">响应模型</button
+        <button data-tab="model" aria-selected="true">请求与响应</button
         ><button data-tab="spec" aria-selected="false">OpenAPI</button
         ><button data-tab="debug" aria-selected="false">调试</button>
       </nav>
       <section id="model">
         <p class="hint">选择接口查看响应结构。循环引用保留为模型引用。</p>
       </section>
-      <section id="spec" class="hidden"><pre id="json"></pre></section>
+      <section id="spec" class="hidden">
+        <div class="spec-toolbar">
+          <button id="sync-current" type="button" class="secondary">
+            上传此接口
+          </button>
+          <button id="copy-spec" type="button" class="secondary">
+            复制 OpenAPI
+          </button>
+          <button id="copy-curl" type="button" class="secondary">
+            复制 cURL
+          </button>
+          <button id="locate-current" type="button" class="secondary">
+            定位源码
+          </button>
+        </div>
+        <pre id="json"></pre>
+        <div id="spec-schemas"></div>
+      </section>
       <section id="debug" class="hidden">
+        <details>
+          <summary>调试设置 · 前置 URL 与默认请求头</summary>
+          <div class="form">
+            <p id="debug-module" class="hint"></p>
+            <label
+              >前置 URL 来源<select id="url-mode">
+                <option value="auto">自动识别</option>
+                <option value="manual">手动填写</option>
+              </select></label
+            >
+            <label
+              >前置 URL<input id="base_url" placeholder="http://localhost:8080"
+            /></label>
+            <label
+              >默认请求头<textarea
+                rows="1"
+                title="项目默认请求头（JSON 对象）"
+                id="global_headers"
+                placeholder='{"Authorization":"Bearer ..."}'
+              ></textarea>
+            </label>
+            <button id="save-debug">保存调试设置</button>
+          </div>
+        </details>
         <div class="form">
-          <label
-            >HTTP 方法<select id="method">
+          <div class="request-line">
+            <select id="method" aria-label="HTTP 方法" title="HTTP 方法">
               <option>GET</option>
               <option>POST</option>
               <option>PUT</option>
@@ -752,13 +908,37 @@
               <option>DELETE</option>
               <option>HEAD</option>
               <option>OPTIONS</option>
-            </select></label
-          ><label
-            >请求 URL<input id="url" placeholder="替换路径参数后发送" /></label
-          ><label
-            >请求头（JSON 键值对象）<textarea id="headers">{}</textarea></label
-          ><label>请求体<textarea id="body"></textarea></label
-          ><button id="send">发送请求</button>
+            </select>
+            <input
+              id="url"
+              aria-label="请求 URL"
+              title="请求 URL"
+              placeholder="请求 URL（替换路径参数后发送）"
+            />
+          </div>
+          <div id="debug-params" class="debug-params hidden"></div>
+          <label
+            >请求头<textarea
+              id="headers"
+              rows="1"
+              title="请求头（JSON 键值对象）"
+            >
+{}</textarea></label
+          ><label>请求体<textarea id="body" rows="1"></textarea></label>
+          <div class="debug-actions">
+            <button id="send">发送请求</button>
+            <button
+              id="generate-debug"
+              type="button"
+              class="secondary"
+              title="生成 JSON 请求体，补全空的路径和查询参数；不发送请求"
+            >
+              生成测试数据
+            </button>
+            <button id="reset-debug" type="button" class="secondary">
+              重置示例
+            </button>
+          </div>
         </div>
         <pre id="response">尚未发送请求</pre>
       </section>
@@ -773,6 +953,21 @@
       <button role="menuitem" data-action="upload">上传到 Apifox</button>
       <button role="menuitem" data-action="yaml">导出 OpenAPI (YAML)</button>
       <button role="menuitem" data-action="json">导出 OpenAPI (JSON)</button>
+      <button role="menuitem" data-action="upload-visible" class="hidden">
+        上传当前筛选接口
+      </button>
+      <button role="menuitem" data-action="yaml-visible" class="hidden">
+        导出筛选接口 (YAML)
+      </button>
+      <button role="menuitem" data-action="json-visible" class="hidden">
+        导出筛选接口 (JSON)
+      </button>
+      <button role="menuitem" data-action="copy-curl" class="hidden">
+        复制 cURL 命令
+      </button>
+      <button role="menuitem" data-action="navigate" class="hidden">
+        跳转到源码定义
+      </button>
     </div>
     <script>
       "use strict";
@@ -797,8 +992,13 @@
         scannedAtMs = null,
         snapshotSaved = false,
         activeKey = null,
+        activeEndpointIndex = null,
         menuTarget = null,
+        menuVisibleTarget = null,
+        menuSingleEndpoint = null,
         menuAnchor = null,
+        pendingFocus = null,
+        debugDrafts = new Map(),
         config = {},
         busy = false,
         expanded = new Set(["root"]),
@@ -820,14 +1020,58 @@
           ? `${cached ? "上次扫描" : "扫描时间"}：${new Date(scannedAtMs).toLocaleString("zh-CN", { hour12: false })} · ${cached ? "已恢复缓存快照，源码可能已变化；" : ""}${snapshotSaved ? "" : "结果未保存；"}上传前自动重新扫描校验`
           : "";
       }
+      function applyFocus(operationId, tab) {
+        if (!operationId || !result?.endpoints?.length) {
+          if (operationId) pendingFocus = { operationId, tab: tab || null };
+          return false;
+        }
+        const index = result.endpoints.findIndex(
+          (e) => e.operation.operationId === operationId,
+        );
+        if (index < 0) return false;
+        show(index);
+        if (tab && ["model", "spec", "debug"].includes(tab)) {
+          document.querySelector(`[data-tab="${tab}"]`)?.click();
+        }
+        const row = $("list").querySelector(`[data-endpoint="${index}"]`);
+        for (
+          let node = row?.closest(".api-tree-node");
+          node;
+          node = node.parentElement?.closest(".api-tree-node")
+        ) {
+          node.open = true;
+          if (node.dataset.nodeKey) expanded.add(node.dataset.nodeKey);
+        }
+        row?.scrollIntoView?.({ block: "nearest" });
+        pendingFocus = null;
+        return true;
+      }
       function renderScan(value, time, saved, cached) {
         rememberExpansion();
+        debugDrafts.clear();
+        activeEndpointIndex = null;
         result = value;
         scannedAtMs = time ?? null;
         snapshotSaved = saved;
         activeKey = null;
         viewList(false);
-        if (result.endpoints.length) show(0);
+        if (result.endpoints.length) {
+          if (
+            !pendingFocus ||
+            !applyFocus(pendingFocus.operationId, pendingFocus.tab)
+          ) {
+            show(0);
+          }
+          if (!cached) pendingFocus = null;
+        } else {
+          $("json").textContent = "";
+          $("spec-schemas").replaceChildren();
+          $("debug-params").replaceChildren();
+          $("debug-params").classList.add("hidden");
+          $("model").replaceChildren(
+            text("p", "当前范围未识别到接口。", "hint"),
+          );
+        }
         diagnostics(result);
         scanTime(cached);
         status(
@@ -846,12 +1090,44 @@
         if (state.snapshotError)
           status("扫描快照未恢复：" + state.snapshotError, true);
       }
+      function diagnosticItem(msg, cls) {
+        const li = text("li", "", cls);
+        const match =
+          msg.match(
+            /^(.*?)（([^（）]+\.(?:java|kt|yml|yaml|properties))）(.*)$/,
+          ) ||
+          msg.match(/^(.*?)\(([^()]+\.(?:java|kt|yml|yaml|properties))\)(.*)$/);
+        if (!match) {
+          li.textContent = msg;
+          return li;
+        }
+        const [, before, file, after] = match;
+        const open = msg.includes(`（${file}）`) ? "（" : "(";
+        const close = open === "（" ? "）" : ")";
+        li.append((before || "") + open);
+        const link = text("span", file, "diagnostic-link");
+        link.tabIndex = 0;
+        link.setAttribute("role", "button");
+        link.title = `跳转到 ${file}`;
+        const trigger = () => {
+          if (!busy) send({ op: "navigate", file });
+        };
+        link.onclick = trigger;
+        link.onkeydown = (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            trigger();
+          }
+        };
+        li.append(link, close + (after || ""));
+        return li;
+      }
       function diagnostics(value) {
         const warnings = value.warnings || [],
           notices = value.notices || [],
           box = $("diagnostics"),
           list = $("diagnostic-list");
-        box.open = false;
+        box.open = warnings.length > 0;
         box.classList.toggle("hidden", !warnings.length && !notices.length);
         $("diagnostic-summary").textContent = [
           warnings.length ? `${warnings.length} 条错误（需修复后同步）` : "",
@@ -860,13 +1136,26 @@
           .filter(Boolean)
           .join("，");
         list.replaceChildren();
-        for (const w of warnings) list.append(text("li", w, "error"));
-        for (const n of notices) list.append(text("li", n, "hint"));
+        for (const w of warnings) list.append(diagnosticItem(w, "error"));
+        for (const n of notices) list.append(diagnosticItem(n, "hint"));
       }
       function lock(value) {
         busy = value;
         if (value) closeMenu(false);
-        for (const id of ["scan", "send", "save-config", "load-projects"])
+        for (const id of [
+          "scan",
+          "send",
+          "save-config",
+          "save-debug",
+          "load-projects",
+          "private_api_url",
+          "sync-current",
+          "copy-spec",
+          "copy-curl",
+          "locate-current",
+          "reset-debug",
+          "generate-debug",
+        ])
           $(id).disabled = value || projectRoot === null;
       }
       function send(v) {
@@ -894,6 +1183,7 @@
         );
       }
       const formIds = [
+        "private_api_url",
         "project_id",
         "endpoint_folder",
         "schema_folder",
@@ -902,6 +1192,7 @@
         "overwrite",
         "title",
         "base_url",
+        "global_headers",
         "search",
         "method",
         "url",
@@ -917,6 +1208,8 @@
             scannedAtMs,
             snapshotSaved,
             activeKey,
+            activeEndpointIndex,
+            debugDrafts: new Map(debugDrafts),
             config,
             configDirty,
             expanded: new Set(expanded),
@@ -947,6 +1240,9 @@
         snapshotSaved = false;
         scanTime(false);
         activeKey = null;
+        activeEndpointIndex = null;
+        debugDrafts = new Map();
+        pendingFocus = null;
         config = {};
         configDirty = false;
         expanded = new Set(["root"]);
@@ -956,6 +1252,9 @@
         $("headers").value = "{}";
         $("response").textContent = "尚未发送请求";
         $("json").textContent = "";
+        $("spec-schemas").replaceChildren();
+        $("debug-params").replaceChildren();
+        $("debug-params").classList.add("hidden");
         $("model").replaceChildren(
           text("p", "选择接口查看响应结构。循环引用保留为模型引用。", "hint"),
         );
@@ -981,6 +1280,8 @@
           expanded,
           treeSearch,
         } = saved);
+        debugDrafts = new Map(saved.debugDrafts || []);
+        activeEndpointIndex = null;
         if (saved.configDirty) {
           config = saved.config;
           configDirty = true;
@@ -989,6 +1290,7 @@
           if (
             saved.configDirty ||
             ![
+              "private_api_url",
               "project_id",
               "endpoint_folder",
               "schema_folder",
@@ -997,6 +1299,7 @@
               "overwrite",
               "title",
               "base_url",
+              "global_headers",
             ].includes(id)
           )
             $(id).value = value;
@@ -1021,6 +1324,7 @@
         status(saved.message, saved.error);
         scanTime(true);
         projectCaption();
+        tokenHint();
       }
       // 以源码身份构造分组，显示名称相同的 Controller 也不会合并。
       function endpointIdentity(e) {
@@ -1173,6 +1477,8 @@
       function closeMenu(restoreFocus = false) {
         $("context-menu").classList.add("hidden");
         menuTarget = null;
+        menuVisibleTarget = null;
+        menuSingleEndpoint = null;
         if (restoreFocus && menuAnchor?.isConnected)
           menuAnchor.focus({ preventScroll: true });
         menuAnchor = null;
@@ -1184,11 +1490,38 @@
         closeMenu();
         activateNode(n.key);
         menuAnchor = anchor;
-        // 右键文件夹始终作用于其全部接口；搜索仅改变可见结果。
+        // 右键文件夹始终作用于其全部接口；若当前处于搜索筛选态，额外提供“仅当前筛选结果”操作。
         menuTarget = n.indices.map(
           (i) => result.endpoints[i].operation.operationId,
         );
+        menuVisibleTarget =
+          n.kind !== "endpoint" &&
+          treeSearch &&
+          n.visible &&
+          n.visible.length > 0 &&
+          n.visible.length < n.indices.length
+            ? n.visible.map((i) => result.endpoints[i].operation.operationId)
+            : null;
+        menuSingleEndpoint = n.kind === "endpoint" ? n.index : null;
         const menu = $("context-menu");
+        for (const act of ["upload-visible", "yaml-visible", "json-visible"]) {
+          menu
+            .querySelector(`[data-action="${act}"]`)
+            ?.classList.toggle("hidden", !menuVisibleTarget);
+        }
+        for (const act of ["copy-curl", "navigate"]) {
+          menu
+            .querySelector(`[data-action="${act}"]`)
+            ?.classList.toggle("hidden", menuSingleEndpoint === null);
+        }
+        if (menuVisibleTarget) {
+          menu.querySelector('[data-action="upload-visible"]').textContent =
+            `上传筛选接口（${menuVisibleTarget.length}）`;
+          menu.querySelector('[data-action="yaml-visible"]').textContent =
+            `导出筛选接口 (YAML, ${menuVisibleTarget.length})`;
+          menu.querySelector('[data-action="json-visible"]').textContent =
+            `导出筛选接口 (JSON, ${menuVisibleTarget.length})`;
+        }
         menu.setAttribute(
           "aria-label",
           `${n.label}，${menuTarget.length} 个接口`,
@@ -1206,7 +1539,9 @@
         menu.style.top =
           Math.max(4, Math.min(y, window.innerHeight - menu.offsetHeight - 4)) +
           "px";
-        menu.querySelector('[role="menuitem"]').focus({ preventScroll: true });
+        menu
+          .querySelector('[role="menuitem"]:not(.hidden)')
+          ?.focus({ preventScroll: true });
       }
       function nodeEvents(row, n) {
         row.dataset.rowKey = n.key;
@@ -1223,19 +1558,43 @@
       ))
         item.onclick = () => {
           if (!menuTarget || busy) return;
-          const ids = [...menuTarget],
+          const allIds = [...menuTarget],
+            visibleIds = menuVisibleTarget ? [...menuVisibleTarget] : null,
+            singleIndex = menuSingleEndpoint,
             action = item.dataset.action;
           closeMenu(true);
-          send({
-            op: action === "upload" ? "upload" : "export",
-            scope: "project",
-            selected: ids,
-            ...(action === "upload" ? {} : { format: action }),
-          });
+          if (action === "upload" || action === "yaml" || action === "json") {
+            send({
+              op: action === "upload" ? "upload" : "export",
+              scope: "project",
+              selected: allIds,
+              ...(action === "upload" ? {} : { format: action }),
+            });
+          } else if (
+            visibleIds &&
+            ["upload-visible", "yaml-visible", "json-visible"].includes(action)
+          ) {
+            const base = action.replace("-visible", "");
+            send({
+              op: base === "upload" ? "upload" : "export",
+              scope: "project",
+              selected: visibleIds,
+              ...(base === "upload" ? {} : { format: base }),
+            });
+          } else if (action === "copy-curl" && singleIndex !== null) {
+            copyCurlFor(singleIndex);
+          } else if (action === "navigate" && singleIndex !== null) {
+            send({
+              op: "navigate",
+              operationId: result.endpoints[singleIndex].operation.operationId,
+            });
+          }
         };
       $("context-menu").onkeydown = (e) => {
         const items = [
-            ...$("context-menu").querySelectorAll('[role="menuitem"]'),
+            ...$("context-menu").querySelectorAll(
+              '[role="menuitem"]:not(.hidden)',
+            ),
           ],
           current = items.indexOf(document.activeElement);
         if (e.key === "Escape" || e.key === "Tab") {
@@ -1243,7 +1602,10 @@
           closeMenu(true);
           return;
         }
-        if (["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) {
+        if (
+          items.length &&
+          ["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)
+        ) {
           e.preventDefault();
           const index =
             e.key === "Home"
@@ -1267,6 +1629,7 @@
           row.dataset.endpoint = n.index;
           row.style.setProperty("--tree-depth", Math.min(depth, 5));
           row.classList.toggle("is-active", activeKey === n.key);
+          row.classList.toggle("has-warning", Boolean(e.warnings?.length));
           nodeEvents(row, n);
           row.onclick = () => show(n.index);
           row.ondblclick = (e) => {
@@ -1283,7 +1646,7 @@
             e.operation.summary || e.handler,
             "endpoint-title",
           );
-          button.title = `${e.operation.summary || e.handler}\n${e.handler}`;
+          button.title = `${e.operation.summary || e.handler}\n${e.handler}${e.warnings?.length ? "\n⚠ " + e.warnings.join("\n⚠ ") : ""}`;
           button.setAttribute(
             "aria-label",
             `预览 ${e.method} ${e.path} ${e.operation.summary || e.handler}`,
@@ -1398,6 +1761,71 @@
               )
           : s;
       }
+      function schemaLabel(s) {
+        if (!s) return "any";
+        if (s.$ref) return s.$ref.split("/").pop();
+        if (s.enum) return "enum(" + s.enum.join(" | ") + ")";
+        if (s.type === "array") return `array<${schemaLabel(s.items)}>`;
+        if (
+          s.additionalProperties &&
+          typeof s.additionalProperties === "object"
+        )
+          return `map<string, ${schemaLabel(s.additionalProperties)}>`;
+        return (s.type || "object") + (s.format ? " (" + s.format + ")" : "");
+      }
+      function constraintsText(s) {
+        if (!s || typeof s !== "object") return "";
+        const items = [];
+        if (s.nullable) items.push("nullable");
+        if (s.readOnly) items.push("readOnly");
+        if (s.writeOnly) items.push("writeOnly");
+        if (s.deprecated) items.push("deprecated");
+        if (s.pattern) items.push(`pattern=${s.pattern}`);
+        if (s.minLength !== undefined || s.maxLength !== undefined) {
+          items.push(`len ${s.minLength ?? 0}..${s.maxLength ?? "∞"}`);
+        }
+        if (s.minimum !== undefined || s.maximum !== undefined) {
+          items.push(`range ${s.minimum ?? "-∞"}..${s.maximum ?? "+∞"}`);
+        }
+        if (s.minItems !== undefined || s.maxItems !== undefined) {
+          items.push(`items ${s.minItems ?? 0}..${s.maxItems ?? "∞"}`);
+        }
+        if (s.default !== undefined) {
+          items.push(`default=${JSON.stringify(s.default)}`);
+        }
+        if (s.example !== undefined) {
+          items.push(`example=${JSON.stringify(s.example)}`);
+        }
+        return items.join(", ");
+      }
+      function appendEnumList(parent, schema) {
+        const raw = schema?.["x-apifox-enum"];
+        if (!raw) return;
+        const entries = Array.isArray(raw)
+          ? raw.map((item) => ({
+              value: item?.value ?? item?.name ?? String(item),
+              desc: item?.description || item?.title || "",
+            }))
+          : typeof raw === "object"
+            ? Object.entries(raw).map(([k, v]) => ({
+                value: k,
+                desc:
+                  typeof v === "string" ? v : v?.description || v?.title || "",
+              }))
+            : [];
+        if (!entries.length) return;
+        const list = text("div", "", "enum-list");
+        for (const item of entries) {
+          list.append(
+            text(
+              "div",
+              item.desc ? `${item.value}：${item.desc}` : String(item.value),
+              "hint",
+            ),
+          );
+        }
+        parent.append(list);
+      }
       function tree(schema, parent, seen = new Set(), depth = 0) {
         if (!schema || depth > 20) {
           parent.append(text("span", "展开达到上限", "hint"));
@@ -1425,6 +1853,11 @@
           for (const s of schema.allOf) tree(s, parent, seen, depth + 1);
           return;
         }
+        if (schema.oneOf || schema.anyOf) {
+          for (const s of schema.oneOf || schema.anyOf)
+            tree(s, parent, seen, depth + 1);
+          return;
+        }
         if (schema.properties) {
           for (const [name, s] of Object.entries(schema.properties)) {
             const details = document.createElement("details");
@@ -1435,8 +1868,10 @@
                 "strong",
                 name + (schema.required?.includes(name) ? " *" : ""),
               ),
-              text("span", "  " + (s.type || "object"), "type"),
+              text("span", "  " + schemaLabel(s), "type"),
             );
+            const cs = constraintsText(s);
+            if (cs) summary.append(text("span", cs, "constraint"));
             details.append(summary);
             if (s.description) details.append(text("p", s.description, "desc"));
             const nested = text("div", "", "model");
@@ -1457,18 +1892,24 @@
           parent.append(
             text(
               "span",
-              schema.enum
-                ? schema.enum.join(" | ")
-                : (schema.type || "object") +
-                    (schema.format ? " (" + schema.format + ")" : ""),
+              schema.enum ? schema.enum.join(" | ") : schemaLabel(schema),
               "type",
             ),
           );
+          const cs = constraintsText(schema);
+          if (cs && depth === 0) parent.append(text("span", cs, "constraint"));
+          appendEnumList(parent, schema);
         }
         if (schema["x-apifox-unresolved"])
           parent.append(text("p", schema.description, "error"));
       }
-      function example(schema, seen = new Set(), depth = 0) {
+      function example(
+        schema,
+        seen = new Set(),
+        depth = 0,
+        generate = false,
+        field = "",
+      ) {
         if (!schema || depth > 12) return null;
         if (schema.example !== undefined) return schema.example;
         if (schema.default !== undefined) return schema.default;
@@ -1476,33 +1917,374 @@
           if (seen.has(schema.$ref)) return null;
           seen = new Set(seen);
           seen.add(schema.$ref);
-          return example(deref(schema), seen, depth + 1);
+          return example(deref(schema), seen, depth + 1, generate, field);
         }
         if (schema.allOf)
           return Object.assign(
             {},
-            ...schema.allOf.map((s) => example(s, seen, depth + 1) || {}),
+            ...schema.allOf.map(
+              (s) => example(s, seen, depth + 1, generate, field) || {},
+            ),
           );
         if (schema.enum) return schema.enum[0];
         if (schema.properties)
           return Object.fromEntries(
             Object.entries(schema.properties)
               .filter(([, s]) => !s.readOnly)
-              .map(([k, s]) => [k, example(s, seen, depth + 1)]),
+              .map(([k, s]) => [k, example(s, seen, depth + 1, generate, k)]),
           );
-        if (schema.items) return [example(schema.items, seen, depth + 1)];
+        if (schema.items)
+          return [example(schema.items, seen, depth + 1, generate, field)];
+        if (generate) {
+          const sample = 1 + Math.floor(Math.random() * 999);
+          if (schema.type === "integer" || schema.type === "number") {
+            const low = schema.minimum ?? Math.min(1, schema.maximum ?? 1);
+            const high = Math.min(schema.maximum ?? low + 998, low + 998);
+            return schema.type === "integer"
+              ? Math.ceil(low) +
+                  Math.floor(
+                    Math.random() * (Math.floor(high) - Math.ceil(low) + 1),
+                  )
+              : low + Math.random() * (high - low);
+          }
+          if (schema.type === "boolean") return Math.random() < 0.5;
+          if (schema.type === "string") {
+            const now = new Date().toISOString();
+            const value =
+              schema.format === "uuid"
+                ? "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(
+                    /[xy]/g,
+                    (digit) =>
+                      (digit === "x"
+                        ? Math.floor(Math.random() * 16)
+                        : 8 + Math.floor(Math.random() * 4)
+                      ).toString(16),
+                  )
+                : schema.format === "email"
+                  ? `user${sample}@example.test`
+                  : schema.format === "date"
+                    ? now.slice(0, 10)
+                    : schema.format === "date-time" || /time$/i.test(field)
+                      ? now
+                      : `${field || "test"}-${sample}`;
+            return value
+              .padEnd(Math.min(schema.minLength || 0, 4096), "x")
+              .slice(0, schema.maxLength ?? 4096);
+          }
+        }
         return (
           { string: "", integer: 0, number: 0, boolean: false, object: {} }[
             schema.type
           ] ?? null
         );
       }
-      function show(i) {
-        activateNode("endpoint:" + result.endpoints[i].operation.operationId);
+      function parseGlobalHeaders() {
+        const raw = (config.global_headers || "").trim();
+        if (!raw) return {};
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed && !Array.isArray(parsed) && typeof parsed === "object")
+            return parsed;
+        } catch {}
+        return {};
+      }
+      function buildEndpointDefaults(e) {
+        let path = e.path;
+        const headers = { ...parseGlobalHeaders() };
+        for (const p of e.operation.parameters || []) {
+          const value = p.schema?.default ?? p.schema?.example ?? "";
+          if (p.in === "header") {
+            const key = headerKey(headers, p.name);
+            headers[key] =
+              p.schema?.default ?? p.schema?.example ?? headers[key] ?? "";
+          }
+          if (p.in === "query")
+            path +=
+              (path.includes("?") ? "&" : "?") +
+              encodeURIComponent(p.name) +
+              "=" +
+              encodeURIComponent(value);
+        }
+        const url = debugBase(e).replace(/\/$/, "") + path;
+        const content = e.operation.requestBody?.content;
+        const media = content ? Object.keys(content)[0] : null;
+        let body = "";
+        if (media) {
+          headers[headerKey(headers, "Content-Type")] = media;
+          body = media.includes("json")
+            ? JSON.stringify(example(content[media].schema), null, 2)
+            : "";
+        }
+        return {
+          method: e.method,
+          url,
+          headersObj: headers,
+          headers: JSON.stringify(headers, null, 2),
+          body,
+        };
+      }
+      function headerKey(headers, name) {
+        return (
+          Object.keys(headers).find(
+            (key) => key.toLowerCase() === name.toLowerCase(),
+          ) ?? name
+        );
+      }
+      function renderSpecSchemas(e) {
+        const holder = $("spec-schemas");
+        holder.replaceChildren();
+        const schemas = result?.document?.components?.schemas;
+        if (!schemas) return;
+        const collected = new Map(),
+          queue = [];
+        const walk = (node) => {
+          if (!node || typeof node !== "object") return;
+          if (Array.isArray(node)) {
+            for (const item of node) walk(item);
+            return;
+          }
+          if (
+            typeof node.$ref === "string" &&
+            node.$ref.startsWith("#/components/schemas/")
+          ) {
+            const name = node.$ref.slice("#/components/schemas/".length);
+            if (!collected.has(name) && schemas[name]) {
+              collected.set(name, schemas[name]);
+              queue.push(schemas[name]);
+            }
+          }
+          for (const val of Object.values(node)) walk(val);
+        };
+        walk(e.operation);
+        while (queue.length) walk(queue.shift());
+        if (!collected.size) return;
+        holder.append(
+          text("p", "关联数据模型（components.schemas）", "hint"),
+          text("pre", JSON.stringify(Object.fromEntries(collected), null, 2)),
+        );
+      }
+      function renderDebugParams(e) {
+        const box = $("debug-params");
+        box.replaceChildren();
+        const params = (e.operation.parameters || []).filter((p) =>
+          ["path", "query", "header"].includes(p.in),
+        );
+        if (!params.length) {
+          box.classList.add("hidden");
+          return;
+        }
+        box.classList.remove("hidden");
+        box.append(text("div", "快捷参数填充", "debug-params-title"));
+        const pathInputs = new Map();
+        const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const computePath = () => {
+          let rendered = e.path;
+          for (const [name, input] of pathInputs.entries()) {
+            const val = input.value.trim();
+            rendered = rendered.replaceAll(
+              `{${name}}`,
+              val ? encodeURIComponent(val) : `{${name}}`,
+            );
+          }
+          return rendered;
+        };
+        const currentBeforeQuery = $("url").value.split("?")[0];
+        const pathPattern = new RegExp(
+          escapeRe(e.path).replace(/\\\{([^}]+)\\\}/g, "([^/?#]+)") + "$",
+        );
+        const initialMatch = currentBeforeQuery.match(pathPattern);
+        const pathParamNames = [...e.path.matchAll(/\{([^}]+)\}/g)].map(
+          (m) => m[1],
+        );
+        let lastRenderedPath = e.path;
+        if (initialMatch) {
+          lastRenderedPath = initialMatch[0];
+        }
+        const currentQueryString = $("url").value.includes("?")
+          ? $("url").value.slice($("url").value.indexOf("?") + 1)
+          : "";
+        const initialQuery = new URLSearchParams(currentQueryString);
+        let initialHeaders = {};
+        try {
+          const parsed = JSON.parse($("headers").value || "{}");
+          if (parsed && !Array.isArray(parsed) && typeof parsed === "object")
+            initialHeaders = parsed;
+        } catch {}
+
+        for (const p of params) {
+          const row = text("div", "", "debug-param-row");
+          const label = text("span", p.name + (p.required ? " *" : ""));
+          label.append(text("span", p.in, "param-badge"));
+          const input = document.createElement("input");
+          input.type = "text";
+          input.dataset.paramName = p.name;
+          input.dataset.paramIn = p.in;
+          input.placeholder = p.description || schemaLabel(p.schema);
+          if (p.in === "path") {
+            const idx = pathParamNames.indexOf(p.name);
+            const raw = idx >= 0 && initialMatch ? initialMatch[idx + 1] : "";
+            if (raw && raw !== `{${p.name}}`) {
+              try {
+                input.value = decodeURIComponent(raw);
+              } catch {
+                input.value = raw;
+              }
+            }
+            pathInputs.set(p.name, input);
+            input.addEventListener("input", () => {
+              const urlVal = $("url").value;
+              const qIdx = urlVal.indexOf("?");
+              const beforeQuery = qIdx >= 0 ? urlVal.slice(0, qIdx) : urlVal;
+              const querySuffix = qIdx >= 0 ? urlVal.slice(qIdx) : "";
+              const basePrefix = beforeQuery.endsWith(lastRenderedPath)
+                ? beforeQuery.slice(
+                    0,
+                    beforeQuery.length - lastRenderedPath.length,
+                  )
+                : debugBase(e).replace(/\/$/, "");
+              lastRenderedPath = computePath();
+              $("url").value = basePrefix + lastRenderedPath + querySuffix;
+            });
+          } else if (p.in === "query") {
+            input.value = initialQuery.get(p.name) ?? "";
+            input.addEventListener("input", () => {
+              const urlVal = $("url").value;
+              const qIdx = urlVal.indexOf("?");
+              const beforeQuery = qIdx >= 0 ? urlVal.slice(0, qIdx) : urlVal;
+              const qs = new URLSearchParams(
+                qIdx >= 0 ? urlVal.slice(qIdx + 1) : "",
+              );
+              qs.set(p.name, input.value);
+              const s = qs.toString();
+              $("url").value = s ? `${beforeQuery}?${s}` : beforeQuery;
+            });
+          } else if (p.in === "header") {
+            input.value = String(
+              initialHeaders[headerKey(initialHeaders, p.name)] ?? "",
+            );
+            input.addEventListener("input", () => {
+              let headersObj = {};
+              try {
+                const parsed = JSON.parse($("headers").value || "{}");
+                if (
+                  parsed &&
+                  !Array.isArray(parsed) &&
+                  typeof parsed === "object"
+                )
+                  headersObj = parsed;
+              } catch {}
+              headersObj[headerKey(headersObj, p.name)] = input.value;
+              $("headers").value = JSON.stringify(headersObj, null, 2);
+            });
+          }
+          row.append(label, input);
+          box.append(row);
+        }
+        lastRenderedPath = computePath();
+      }
+      function copyCurlFor(index) {
+        const e = result?.endpoints[index];
+        if (!e) return;
+        const defaults = buildEndpointDefaults(e);
+        const useCurrent = index === activeEndpointIndex;
+        const method = useCurrent ? $("method").value : defaults.method;
+        const url = useCurrent ? $("url").value : defaults.url;
+        let headersObj = defaults.headersObj;
+        if (useCurrent) {
+          try {
+            const parsed = JSON.parse($("headers").value || "{}");
+            if (parsed && !Array.isArray(parsed) && typeof parsed === "object")
+              headersObj = parsed;
+          } catch {}
+        }
+        const body = useCurrent ? $("body").value : defaults.body;
+        const sq = (s) => "'" + String(s).replaceAll("'", "'\\''") + "'";
+        const parts = [`curl -X ${method} ${sq(url)}`];
+        for (const [k, v] of Object.entries(headersObj)) {
+          if (v !== "" && v !== undefined && v !== null)
+            parts.push(`-H ${sq(`${k}: ${v}`)}`);
+        }
+        if (body) parts.push(`--data-raw ${sq(body)}`);
+        send({ op: "copy", text: parts.join(" "), label: "cURL 命令" });
+      }
+      function show(i, resetDraft = false) {
         const e = result.endpoints[i];
+        if (!e) return;
+        const nextId = e.operation.operationId;
+        if (
+          activeEndpointIndex !== null &&
+          result.endpoints[activeEndpointIndex]
+        ) {
+          const prevId =
+            result.endpoints[activeEndpointIndex].operation.operationId;
+          if (!resetDraft && prevId !== nextId) {
+            debugDrafts.set(prevId, {
+              method: $("method").value,
+              url: $("url").value,
+              headers: $("headers").value,
+              body: $("body").value,
+              response: $("response").textContent,
+            });
+          }
+        }
+        activeEndpointIndex = i;
+        renderDebugSettings(e);
+        activateNode("endpoint:" + nextId);
         $("json").textContent = JSON.stringify(e.operation, null, 2);
+        renderSpecSchemas(e);
         const model = $("model");
         model.replaceChildren();
+        for (const w of e.warnings || [])
+          model.append(text("p", "错误：" + w, "error"));
+        for (const n of e.notices || [])
+          model.append(text("p", "提示：" + n, "hint"));
+        if (e.operation.parameters?.length) {
+          model.append(text("h3", "请求参数"));
+          const paramWrap = text("div", "", "model");
+          for (const p of e.operation.parameters) {
+            const details = document.createElement("details");
+            details.open = true;
+            const summary = document.createElement("summary");
+            summary.append(
+              text("strong", p.name + (p.required ? " *" : "")),
+              text("span", p.in, "param-badge"),
+              text("span", "  " + schemaLabel(p.schema), "type"),
+            );
+            const cs = constraintsText(p.schema);
+            if (cs) summary.append(text("span", cs, "constraint"));
+            details.append(summary);
+            if (p.description) details.append(text("p", p.description, "desc"));
+            if (
+              p.schema?.$ref ||
+              p.schema?.properties ||
+              p.schema?.items ||
+              p.schema?.enum ||
+              p.schema?.["x-apifox-enum"]
+            ) {
+              const nested = text("div", "", "model");
+              tree(p.schema, nested);
+              details.append(nested);
+            }
+            paramWrap.append(details);
+          }
+          model.append(paramWrap);
+        }
+        if (e.operation.requestBody?.content) {
+          model.append(
+            text(
+              "h3",
+              "请求体" + (e.operation.requestBody.required ? " *" : ""),
+            ),
+          );
+          for (const [media, c] of Object.entries(
+            e.operation.requestBody.content,
+          )) {
+            model.append(text("p", media, "hint"));
+            const n = text("div", "", "model");
+            tree(c.schema, n);
+            model.append(n);
+          }
+        }
         for (const [code, response] of Object.entries(e.operation.responses)) {
           model.append(text("h3", code + " " + response.description));
           for (const [media, c] of Object.entries(response.content || {})) {
@@ -1512,31 +2294,22 @@
             model.append(n);
           }
         }
-        $("method").value = e.method;
-        let path = e.path;
-        const headers = {};
-        for (const p of e.operation.parameters || []) {
-          const value = p.schema?.default ?? p.schema?.example ?? "";
-          if (p.in === "header") headers[p.name] = value;
-          if (p.in === "query")
-            path +=
-              (path.includes("?") ? "&" : "?") +
-              encodeURIComponent(p.name) +
-              "=" +
-              encodeURIComponent(value);
+        const draft = !resetDraft ? debugDrafts.get(nextId) : null;
+        if (draft) {
+          $("method").value = draft.method;
+          $("url").value = draft.url;
+          $("headers").value = draft.headers;
+          $("body").value = draft.body;
+          $("response").textContent = draft.response;
+        } else {
+          const defaults = buildEndpointDefaults(e);
+          $("method").value = defaults.method;
+          $("url").value = defaults.url;
+          $("headers").value = defaults.headers;
+          $("body").value = defaults.body;
+          $("response").textContent = "尚未发送请求";
         }
-        $("url").value =
-          (config.base_url || "http://localhost:8080").replace(/\/$/, "") +
-          path;
-        const content = e.operation.requestBody?.content;
-        const media = content ? Object.keys(content)[0] : null;
-        if (media) {
-          headers["Content-Type"] = media;
-          $("body").value = media.includes("json")
-            ? JSON.stringify(example(content[media].schema), null, 2)
-            : "";
-        } else $("body").value = "";
-        $("headers").value = JSON.stringify(headers, null, 2);
+        renderDebugParams(e);
       }
       $("settings-toggle").onclick = () => {
         const hidden = $("settings").classList.toggle("hidden");
@@ -1544,20 +2317,63 @@
         $("settings-toggle").setAttribute("aria-expanded", String(!hidden));
         if (!hidden && !configDirty) send({ op: "init" });
       };
-      for (const field of $("settings").querySelectorAll("input,select")) {
+      for (const field of $("settings").querySelectorAll(
+        "input,select,textarea",
+      )) {
         if (field.id === "project-filter") continue;
         field.addEventListener("input", () => (configDirty = true));
         field.addEventListener("change", () => (configDirty = true));
       }
+      let tokenFlags = {};
+      function tokenHint() {
+        const privateMode = !!$("private_api_url").value.trim();
+        const label = privateMode
+          ? "Apifox Private Access Token"
+          : "Apifox Access Token";
+        $("token").textContent = (
+          privateMode ? tokenFlags.privateTokenSet : tokenFlags.tokenSet
+        )
+          ? label + " 已设置。"
+          : "请在插件 Secrets 中设置 " + label + "。";
+      }
+      function clearServerProjects() {
+        remoteProjects = [];
+        projectsLoaded = false;
+        projectListMessage = "";
+        $("project-filter").value = "";
+        renderProjects();
+      }
+      $("private_api_url").addEventListener("input", () => {
+        clearServerProjects();
+        for (const key of [
+          "project_id",
+          "endpoint_folder",
+          "schema_folder",
+          "branch",
+          "module",
+        ])
+          $(key).value = "";
+        projectCaption();
+        tokenHint();
+      });
+      function sameServer() {
+        return (
+          $("private_api_url").value.trim() ===
+          (config.private_api_url || "").trim()
+        );
+      }
       function applyConfig(v) {
+        if ($("private_api_url").value !== (v.config.private_api_url || ""))
+          clearServerProjects();
+        $("private_api_url").value = v.config.private_api_url || "";
         config = v.config;
         configDirty = false;
         for (const [k, val] of Object.entries(config)) {
-          if ($(k)) $(k).value = val ?? "";
+          if ($(k) && !["base_url", "global_headers"].includes(k))
+            $(k).value = val ?? "";
         }
-        $("token").textContent = v.tokenSet
-          ? "Apifox 访问令牌已设置。"
-          : "请在 Settings → Plugins → Apifox Helper → Secrets 中设置 Apifox Access Token。";
+        tokenFlags = v;
+        tokenHint();
         const root = v.projectRoot || "";
         const label = root
           .replaceAll("\\", "/")
@@ -1577,9 +2393,53 @@
         )
           refreshProjects();
       }
+      function manualBase(e) {
+        const key = e.module_path || "";
+        if (config.module_urls && Object.hasOwn(config.module_urls, key))
+          return config.module_urls[key];
+        return config.base_url === "http://localhost:8080"
+          ? ""
+          : config.base_url || "";
+      }
+      function debugBase(e) {
+        return manualBase(e) || projectDebugBase();
+      }
+      function projectDebugBase() {
+        return result?.detected_url || "http://localhost:8080";
+      }
+      function renderDebugSettings(e) {
+        $("debug-module").textContent =
+          `当前模块：${e.module_path || "根项目"} · 项目自动地址：${projectDebugBase()}`;
+        $("url-mode").value = manualBase(e) ? "manual" : "auto";
+        $("base_url").readOnly = !manualBase(e);
+        $("base_url").value = debugBase(e);
+        $("global_headers").value = config.global_headers || "";
+      }
+      $("url-mode").onchange = () => {
+        const e = result?.endpoints[activeEndpointIndex];
+        if (!e) return;
+        $("base_url").readOnly = $("url-mode").value === "auto";
+        $("base_url").value = $("base_url").readOnly
+          ? projectDebugBase()
+          : debugBase(e);
+      };
+      $("save-debug").onclick = () => {
+        const e = result?.endpoints[activeEndpointIndex];
+        if (!e) return;
+        const manual = $("url-mode").value === "manual";
+        const base = $("base_url").value.trim();
+        if (manual && !base) return status("请填写前置 URL", true);
+        send({
+          op: "save-debug",
+          modulePath: e.module_path || "",
+          baseUrl: manual ? base : "",
+          headers: $("global_headers").value.trim(),
+        });
+      };
       $("save-config").onclick = () => {
         const next = {};
-        for (const k of ["project_id", "title", "base_url", "overwrite"])
+        next.private_api_url = $("private_api_url").value.trim();
+        for (const k of ["project_id", "title", "overwrite"])
           next[k] = $(k).value.trim();
         for (const k of [
           "endpoint_folder",
@@ -1597,12 +2457,14 @@
         const chosen = remoteProjects.find((p) => p.id === next.project_id);
         next.project_name =
           chosen?.name ||
-          (config.project_id === next.project_id
+          (sameServer() && config.project_id === next.project_id
             ? config.project_name || ""
             : "");
         next.team_name =
           chosen?.team_name ||
-          (config.project_id === next.project_id ? config.team_name || "" : "");
+          (sameServer() && config.project_id === next.project_id
+            ? config.team_name || ""
+            : "");
         send({ op: "save-config", config: next });
       };
       function projectCaption() {
@@ -1610,10 +2472,10 @@
           project = remoteProjects.find((p) => p.id === id);
         const name =
           project?.name ||
-          (config.project_id === id ? config.project_name : "");
+          (sameServer() && config.project_id === id ? config.project_name : "");
         const team =
           project?.team_name ||
-          (config.project_id === id ? config.team_name : "");
+          (sameServer() && config.project_id === id ? config.team_name : "");
         $("project-name").textContent =
           name || (id ? "项目 " + id : "选择 Apifox 项目");
         $("project-meta").textContent = id
@@ -1727,7 +2589,13 @@
       function refreshProjects() {
         if (busy) return;
         projectListMessage = "";
-        send({ op: "list-projects" });
+        const address = $("private_api_url").value.trim();
+        send({
+          op: "list-projects",
+          ...(address || config.private_api_url
+            ? { private_api_url: address }
+            : {}),
+        });
         renderProjects();
       }
       function chooseProject(project) {
@@ -1830,6 +2698,100 @@
       });
       $("scan").onclick = () => send({ op: "scan", scope: "project" });
       $("search").oninput = () => viewList();
+      $("sync-current").onclick = () => {
+        if (
+          busy ||
+          activeEndpointIndex === null ||
+          !result?.endpoints[activeEndpointIndex]
+        )
+          return;
+        send({
+          op: "upload",
+          scope: "project",
+          selected: [
+            result.endpoints[activeEndpointIndex].operation.operationId,
+          ],
+        });
+      };
+      $("copy-spec").onclick = () => {
+        const content = $("json").textContent;
+        if (!content || busy) return;
+        send({ op: "copy", text: content, label: "OpenAPI 片段" });
+      };
+      $("copy-curl").onclick = () => {
+        if (busy || activeEndpointIndex === null) return;
+        copyCurlFor(activeEndpointIndex);
+      };
+      $("locate-current").onclick = () => {
+        if (
+          busy ||
+          activeEndpointIndex === null ||
+          !result?.endpoints[activeEndpointIndex]
+        )
+          return;
+        send({
+          op: "navigate",
+          operationId:
+            result.endpoints[activeEndpointIndex].operation.operationId,
+        });
+      };
+      $("generate-debug").onclick = () => {
+        const endpoint = result?.endpoints[activeEndpointIndex];
+        if (!endpoint || busy) return;
+        const [originalPath, query = ""] = $("url").value.split(/\?(.*)/s);
+        let path = originalPath;
+        const params = new URLSearchParams(query);
+        let queryChanged = false;
+        for (const param of endpoint.operation.parameters || []) {
+          if (param.in !== "path" && param.in !== "query") continue;
+          const value =
+            param.example ??
+            example(
+              param.schema || { type: "string" },
+              new Set(),
+              0,
+              true,
+              param.name,
+            );
+          if (value == null) continue;
+          if (param.in === "path")
+            path = path.replaceAll(`{${param.name}}`, () =>
+              encodeURIComponent(String(value)),
+            );
+          else if (!params.get(param.name)) {
+            params.set(param.name, String(value));
+            queryChanged = true;
+          }
+        }
+        const content = endpoint.operation.requestBody?.content || {};
+        const media = Object.keys(content)[0];
+        const jsonBody = media?.includes("json") && content[media].schema;
+        if (!jsonBody && !queryChanged && path === originalPath) {
+          status("没有可生成的 JSON 请求体或待填参数");
+          return;
+        }
+        if (jsonBody)
+          $("body").value = JSON.stringify(
+            example(jsonBody, new Set(), 0, true),
+            null,
+            2,
+          );
+        const suffix = queryChanged ? params.toString() : query;
+        $("url").value = path + (suffix ? "?" + suffix : "");
+        renderDebugParams(endpoint);
+        status("测试数据已填入，未发送请求。请核对后发送。");
+      };
+      $("reset-debug").onclick = () => {
+        if (
+          activeEndpointIndex === null ||
+          !result?.endpoints[activeEndpointIndex]
+        )
+          return;
+        debugDrafts.delete(
+          result.endpoints[activeEndpointIndex].operation.operationId,
+        );
+        show(activeEndpointIndex, true);
+      };
       for (const b of document.querySelectorAll("[data-tab]"))
         b.onclick = () => {
           for (const other of document.querySelectorAll("[data-tab]"))
@@ -1842,6 +2804,27 @@
           const headers = JSON.parse($("headers").value || "{}");
           if (!headers || Array.isArray(headers) || typeof headers !== "object")
             throw Error("请求头必须是 JSON 对象");
+          let pathname = $("url").value.split(/[?#]/)[0];
+          try {
+            pathname = new URL($("url").value).pathname;
+          } catch {}
+          let decodedPath = pathname;
+          try {
+            decodedPath = decodeURIComponent(pathname);
+          } catch {}
+          const unresolved = decodedPath.match(/\{[^}]+\}/g);
+          if (unresolved?.length) {
+            status(`请先替换路径参数：${unresolved.join(", ")}`, true);
+            const firstParam = unresolved[0].slice(1, -1);
+            const targetInput =
+              [...$("debug-params").querySelectorAll("input")].find(
+                (el) =>
+                  el.dataset.paramName === firstParam &&
+                  el.dataset.paramIn === "path",
+              ) || $("url");
+            targetInput.focus();
+            return;
+          }
           send({
             op: "debug",
             url: $("url").value,
@@ -1853,8 +2836,32 @@
           status(e.message, true);
         }
       };
+      function formatDebugResponse(res) {
+        const parts = [
+          `HTTP ${res.status}${typeof res.durationMs === "number" ? ` (${res.durationMs} ms)` : ""}`,
+        ];
+        if (res.headers?.length) {
+          parts.push("", ...res.headers.map(([k, v]) => `${k}: ${v}`));
+        }
+        if (res.body) {
+          let formatted = res.body;
+          try {
+            formatted = JSON.stringify(JSON.parse(res.body), null, 2);
+          } catch {}
+          parts.push("", formatted);
+        }
+        return parts.join("\n");
+      }
       openidea.onMessage((raw) => {
         const v = typeof raw === "string" ? JSON.parse(raw) : raw;
+        if (v.op === "focus-endpoint") {
+          if (v.projectRoot && projectRoot && v.projectRoot !== projectRoot)
+            return;
+          if (!applyFocus(v.operationId, v.tab)) {
+            pendingFocus = { operationId: v.operationId, tab: v.tab || null };
+          }
+          return;
+        }
         if (v.clientId !== clientId) return;
         const contextReply = v.requestId === contextId;
         if (v.requestId !== pendingId && !contextReply) return;
@@ -1873,7 +2880,20 @@
           if (changed && v.message) status(v.message);
         } else if (v.projectRoot !== projectRoot) return;
         if (contextReply) return;
-        if (v.op === "projects") {
+        if (v.op === "debug-saved") {
+          const e = result?.endpoints[activeEndpointIndex];
+          const before = e && buildEndpointDefaults(e);
+          config.module_urls = v.module_urls;
+          config.global_headers = v.global_headers;
+          if (e) {
+            const after = buildEndpointDefaults(e);
+            for (const key of ["url", "headers"])
+              if ($(key).value === before[key]) $(key).value = after[key];
+            renderDebugSettings(e);
+            renderDebugParams(e);
+          }
+          status("调试设置已保存；已有自定义请求可用重置示例应用新默认值");
+        } else if (v.op === "projects") {
           remoteProjects = v.projects;
           projectsLoaded = true;
           projectListMessage = v.notices?.join(" ") || "";
@@ -1884,8 +2904,11 @@
           if (v.snapshotError)
             status("扫描完成，但本次结果未持久化：" + v.snapshotError, true);
         } else if (v.op === "response") {
-          $("response").textContent = JSON.stringify(v.response, null, 2);
-          status("请求完成，HTTP " + v.response.status);
+          $("response").textContent = formatDebugResponse(v.response);
+          status(
+            `请求完成，HTTP ${v.response.status}${typeof v.response.durationMs === "number" ? `（${v.response.durationMs} ms）` : ""}`,
+            v.response.status >= 400,
+          );
         } else if (v.op === "error") {
           status(v.message, true);
           if (action === "list-projects") {
@@ -1895,6 +2918,12 @@
         } else if (v.op === "notice") status(v.message);
       });
       if (INITIAL && typeof INITIAL === "object") {
+        if (INITIAL.focusOperationId) {
+          pendingFocus = {
+            operationId: INITIAL.focusOperationId,
+            tab: INITIAL.focusTab || null,
+          };
+        }
         projectRoot = INITIAL.projectRoot ?? null;
         applyConfig(INITIAL);
         restoreSnapshot(INITIAL);

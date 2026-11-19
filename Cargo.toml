@@ -1,6 +1,6 @@
 [package]
 name = "apifox-helper-openidea"
-version = "0.1.13"
+version = "0.1.14"
 edition = "2024"
 description = "OpenIDEA 的 Apifox 接口文档、同步和调试插件"
 license = "Apache-2.0"

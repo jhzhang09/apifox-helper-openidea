@@ -156,6 +156,34 @@ impl ProjectSettings {
 }
 
 impl ProjectContext {
+    pub fn debug_url(&self) -> String {
+        let address = self
+            .route("${server.address:localhost}")
+            .unwrap_or_default();
+        let host = if let Ok(ip) = address.parse::<std::net::Ipv6Addr>() {
+            if ip.is_unspecified() {
+                "localhost".into()
+            } else {
+                format!("[{ip}]")
+            }
+        } else if address == "0.0.0.0"
+            || address.is_empty()
+            || !address
+                .bytes()
+                .all(|ch| ch.is_ascii_alphanumeric() || b".-".contains(&ch))
+        {
+            "localhost".into()
+        } else {
+            address
+        };
+        let port = self
+            .route("${server.port:8080}")
+            .ok()
+            .and_then(|v| v.parse::<u16>().ok())
+            .filter(|p| *p != 0)
+            .unwrap_or(8080);
+        format!("http://{host}:{port}")
+    }
     pub fn route(&self, path: &str) -> Result<String, String> {
         self.resolve(path, &mut Vec::new())
     }

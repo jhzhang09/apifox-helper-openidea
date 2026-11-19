@@ -6,16 +6,22 @@
 
 | 配置 | 含义 |
 | --- | --- |
+| 私有化 API 地址 | 留空使用公网 SaaS；私有化填写 HTTPS 根地址，可带路径前缀，使用独立的 `Apifox Private Access Token` |
 | 同步项目 | 从账号项目列表选择，或手动输入项目 ID |
 | 接口目录 / 模型目录 ID | 留空为项目根目录 |
 | 分支 / 模块 ID | 留空为主分支和默认模块 |
 | 已有文档处理 | AUTO_MERGE、OVERWRITE_EXISTING、KEEP_EXISTING、CREATE_NEW |
 | 文档标题 | OpenAPI info.title |
-| 调试服务地址 | 生成调试 URL 的基础地址，默认 http://localhost:8080 |
 
 项目选择器首次打开自动查询，后续复用当前页面的列表。刷新、搜索、取消不会更改目标；选中后仍需保存。切换到其他项目会清空关联目录、分支和模块 ID，同一项目保留原配置。
 
 查询失败时保留原 ID，可重试或手动填写。团队名称暂时无法加载时按团队 ID 显示并提示。接口目录、分支和模块仍需手动填写。
+
+## 调试设置
+
+选中接口后打开 **调试 → 调试设置**。每次扫描从全项目基础配置（`application.yml`、`application.yaml`、`application.properties`）解析一次 `server.address` 和 `server.port`，所有自动模式的接口共用同一地址。切换接口或模块不会重新识别；配置变化后请重新扫描。不推测运行时 profile 和环境变量；未识别或存在冲突的地址、端口分别使用 `localhost`、`8080`，通配监听地址按本机访问。
+
+选择 **手动填写** 可为当前模块保存前置 URL（含协议、端口，可带路径）；旧版非默认调试地址继续沿用。默认请求头按本地项目共享，接口显式默认值或示例优先。无需 Apifox 项目 ID 即可保存调试设置。
 
 ## 配置保存位置
 
@@ -67,7 +73,17 @@ Spring 与 Swagger 的同名 RequestBody 按全名、显式 import 或对应通�
 - 父类字段先于当前类字段，其余按源码顺序导出，并生成 x-apifox-orders。
 - 旧版编码模型名不会自动从 Apifox 删除。确认无引用后可手动清理旧模型。
 
-## 基础配置与动态路由
+## 模块名称与基础配置路由
+
+### 模块名识别
+
+模块名按所属目录的构建文件依次解析：
+
+1. Maven：`pom.xml` 中的 `<artifactId>`。
+2. Gradle：模块目录的 `build.gradle.kts` / `build.gradle`（或根目录 `settings.gradle.kts` / `settings.gradle`）中的 `rootProject.name` 或 `archivesBaseName`。
+3. 找不到或未解析时回退为模块目录名。
+
+### 动态路由解析
 
 `${key}` 从不带环境后缀的 application.yml、application.yaml、application.properties 中解析，支持嵌套键、YAML 多文档、默认值与递归引用。带 profile 激活条件的 YAML 文档和测试资源不参与。
 
@@ -96,7 +112,7 @@ method.ignore=@example.InternalApi
 
 ## 项目列表查询协议
 
-项目与团队查询使用固定主机 api.apifox.com。协议依据官方 ApifoxHelper 2.1.2-262 安装包的资源配置，以及 VerifyRequest 的 javap 字节码反汇编核对，**不是原始源码**：
+项目查询、团队查询和 OpenAPI 导入使用同一个同步服务器，默认 `https://api.apifox.com`。私有化实例需支持对应接口；项目列表不可用时可手填项目 ID。查询协议依据官方 ApifoxHelper 2.1.2-262 安装包的资源配置，以及 VerifyRequest 的 javap 字节码反汇编核对，**不是原始源码**：
 
 - GET /api/v1/user-projects；响应 data 数组含 id、name、teamId、type。
 - GET /api/v1/user-teams?locale=zh-CN；响应 data 数组含 id、name。

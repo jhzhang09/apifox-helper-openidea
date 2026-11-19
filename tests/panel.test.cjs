@@ -130,6 +130,57 @@ const exp = {
   ],
 };
 
+test("切换同步服务器清空关联 ID，查询使用新地址，清空地址切回公网", () => {
+  const state = localState("/project", "42");
+  state.config.private_api_url = "https://first.example";
+  state.config.branch = 7;
+  const p = panel(state);
+  const address = p.$("private_api_url");
+  for (const value of ["https://second.example/gateway", ""]) {
+    address.value = value;
+    address.dispatchEvent(new p.window.Event("input"));
+    assert.equal(p.$("project_id").value, "");
+    assert.equal(p.$("branch").value, "");
+    p.$("load-projects").click();
+    assert.deepEqual(p.sent.at(-1), {
+      op: "list-projects",
+      private_api_url: value,
+    });
+    p.reply({ op: "projects", projects: [] });
+  }
+});
+
+test("生成测试数据填充嵌套请求模型及参数，保留已有输入且不发送", () => {
+  const p = panel();
+  const exported = structuredClone(exp);
+  const endpoint = exported.endpoints[0];
+  endpoint.path = "/users/{userId}";
+  endpoint.operation.parameters.push(
+    {
+      in: "path",
+      name: "userId",
+      schema: { type: "integer", minimum: 4, maximum: 4 },
+    },
+    { in: "query", name: "name", schema: { type: "string" } },
+  );
+  p.reply({ op: "scan", export: exported });
+  p.$("url").value = "https://local.test/users/{userId}?id=123&name=";
+  p.$("headers").value = '{"Authorization":"local"}';
+  const sent = p.sent.length;
+  p.$("generate-debug").click();
+  const body = JSON.parse(p.$("body").value);
+  assert.ok(body.name && body.address.city);
+  assert.equal(body.parent, null);
+  assert.match(
+    p.$("url").value,
+    /^https:\/\/local\.test\/users\/4\?id=123&name=.+/,
+  );
+  assert.equal(p.$("headers").value, '{"Authorization":"local"}');
+  assert.equal(p.sent.length, sent);
+  p.$("reset-debug").click();
+  assert.equal(JSON.parse(p.$("body").value).name, "");
+});
+
 function localState(root, id) {
   return {
     op: "config",
@@ -1120,5 +1171,399 @@ test("窄树布局仍支持接口右键、预览和双击导航", () => {
     op: "navigate",
     operationId: "create-user",
   });
+  p.dom.window.close();
+});
+
+test("模型视图展示请求参数、请求体、字段约束和枚举字典说明且不含按钮", () => {
+  const p = panel();
+  p.reply({
+    op: "scan",
+    export: {
+      document: {
+        components: {
+          schemas: {
+            OrderStatus: {
+              type: "integer",
+              enum: [1, 2],
+              "x-apifox-enum": [
+                { value: 1, description: "待支付" },
+                { value: 2, description: "已完成" },
+              ],
+            },
+            CreateReq: {
+              type: "object",
+              required: ["title"],
+              properties: {
+                title: {
+                  type: "string",
+                  minLength: 2,
+                  maxLength: 20,
+                  description: "订单标题",
+                },
+                status: { $ref: "#/components/schemas/OrderStatus" },
+              },
+            },
+          },
+        },
+      },
+      warnings: [],
+      notices: [],
+      endpoints: [
+        {
+          method: "POST",
+          path: "/orders/{id}",
+          handler: "OrderController.create",
+          file: "src/main/java/demo/OrderController.java",
+          line: 12,
+          operation: {
+            operationId: "create-order",
+            summary: "创建订单",
+            parameters: [
+              {
+                name: "id",
+                in: "path",
+                required: true,
+                description: "订单编号",
+                schema: { type: "integer", minimum: 1 },
+              },
+            ],
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/CreateReq" },
+                },
+              },
+            },
+            responses: {
+              200: {
+                description: "OK",
+                content: {
+                  "application/json": {
+                    schema: { $ref: "#/components/schemas/OrderStatus" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    },
+  });
+  const modelText = p.$("model").textContent;
+  assert.ok(modelText.includes("请求参数"));
+  assert.ok(modelText.includes("订单编号"));
+  assert.ok(modelText.includes("range 1..+∞"));
+  assert.ok(modelText.includes("请求体 *"));
+  assert.ok(modelText.includes("len 2..20"));
+  assert.ok(modelText.includes("1：待支付"));
+  assert.ok(modelText.includes("2：已完成"));
+  assert.ok(p.$("model").querySelector(".param-badge"));
+  assert.ok(p.$("model").querySelector(".constraint"));
+  assert.ok(p.$("model").querySelector(".enum-list"));
+  assert.equal(p.$("model").querySelectorAll("button").length, 0);
+  p.dom.window.close();
+});
+
+test("切换模块保留项目自动地址，手动覆盖仅作用于指定模块", () => {
+  const p = panel();
+  const exported = treeExport();
+  exported.detected_url = "http://127.0.0.2:9091";
+  p.reply({ op: "scan", export: exported });
+  assert.ok(p.$("debug").contains(p.$("global_headers")));
+  assert.equal(p.$("base_url").readOnly, true);
+  assert.ok(p.$("url").value.startsWith("http://127.0.0.2:9091/"));
+  p.$("url-mode").value = "manual";
+  p.$("url-mode").dispatchEvent(new p.window.Event("change"));
+  p.$("base_url").value = "https://demo.test:9443";
+  p.$("save-debug").click();
+  assert.equal(p.sent.at(-1).baseUrl, "https://demo.test:9443");
+  p.reply({
+    op: "debug-saved",
+    module_urls: { lbs: "https://demo.test:9443" },
+    global_headers: "",
+  });
+  assert.ok(p.$("url").value.startsWith("https://demo.test:9443/"));
+  p.$("expand-all").click();
+  p.$("list").querySelector('[data-endpoint="3"] .endpoint-title').click();
+  assert.equal(p.$("base_url").value, exported.detected_url);
+  assert.ok(p.$("url").value.startsWith(exported.detected_url + "/"));
+  p.window.close();
+});
+
+test("按接口隔离调试草稿与响应、合并全局默认请求头并格式化响应 JSON 与耗时", () => {
+  const p = panel({
+    op: "config",
+    projectRoot: "/project",
+    config: {
+      base_url: "http://localhost:9000",
+      global_headers: '{"Authorization":"Bearer dev-token"}',
+    },
+    tokenSet: true,
+  });
+  const exported = treeExport();
+  exported.endpoints[0].operation.parameters = [
+    ...exported.endpoints[0].operation.parameters,
+    { in: "header", name: "authorization", schema: { type: "string" } },
+  ];
+  p.reply({ op: "scan", export: exported });
+  p.$("expand-all").click();
+
+  // 第一个接口自动合并 global_headers
+  const initialHeaders = JSON.parse(p.$("headers").value);
+  assert.equal(initialHeaders.Authorization, "Bearer dev-token");
+  assert.equal(Object.hasOwn(initialHeaders, "authorization"), false);
+  const authInput = p
+    .$("debug-params")
+    .querySelector('[data-param-name="authorization"]');
+  assert.equal(authInput.value, "Bearer dev-token");
+  authInput.value = "updated";
+  authInput.dispatchEvent(new p.dom.window.Event("input"));
+  assert.deepEqual(JSON.parse(p.$("headers").value), {
+    ...initialHeaders,
+    Authorization: "updated",
+  });
+
+  // 修改第一个接口 URL 并收到响应
+  p.$("url").value = "http://localhost:9000/users?custom=1";
+  p.$("send").click();
+  p.reply({
+    op: "response",
+    response: {
+      status: 200,
+      durationMs: 37,
+      headers: [["content-type", "application/json"]],
+      body: '{"code":0,"message":"成功"}',
+    },
+  });
+  assert.ok(p.$("response").textContent.includes("HTTP 200 (37 ms)"));
+  assert.ok(p.$("response").textContent.includes('"message": "成功"'));
+  assert.ok(!p.$("response").textContent.includes('\\"message\\"'));
+
+  // 切换到第二个接口：响应重置为默认提示，不残留上一接口响应
+  p.$("list").querySelector('[data-endpoint="1"] .endpoint-title').click();
+  assert.equal(p.$("response").textContent, "尚未发送请求");
+  assert.equal(p.$("method").value, "POST");
+
+  // 切回第一个接口：草稿与响应恢复
+  p.$("list").querySelector('[data-endpoint="0"] .endpoint-title').click();
+  assert.equal(p.$("url").value, "http://localhost:9000/users?custom=1");
+  assert.ok(p.$("response").textContent.includes("HTTP 200 (37 ms)"));
+
+  // 点击重置示例恢复默认 URL 与未发送状态
+  p.$("reset-debug").click();
+  assert.equal(p.$("url").value, "http://localhost:9000/users?id=1");
+  assert.equal(p.$("response").textContent, "尚未发送请求");
+  p.dom.window.close();
+});
+
+test("快捷参数填充联动更新 URL 与请求头，未替换路径参数时阻止发送", () => {
+  const p = panel();
+  p.reply({
+    op: "scan",
+    export: {
+      document: { components: { schemas: {} } },
+      warnings: [],
+      notices: [],
+      endpoints: [
+        {
+          method: "GET",
+          path: "/users/{id}",
+          handler: "UserController.detail",
+          file: "src/main/java/demo/UserController.java",
+          line: 10,
+          operation: {
+            operationId: "user-detail",
+            summary: "用户详情",
+            parameters: [
+              {
+                name: "id",
+                in: "path",
+                required: true,
+                schema: { type: "string" },
+              },
+              {
+                name: "keyword",
+                in: "query",
+                required: false,
+                schema: { type: "string" },
+              },
+              {
+                name: "X-Trace",
+                in: "header",
+                required: false,
+                schema: { type: "string" },
+              },
+            ],
+            responses: { 200: { description: "OK" } },
+          },
+        },
+      ],
+    },
+  });
+
+  // 未替换 {id} 时点击发送会被拦截
+  const beforeCount = p.sent.length;
+  p.$("send").click();
+  assert.equal(p.sent.length, beforeCount);
+  assert.ok(p.$("status").textContent.includes("{id}"));
+
+  // 通过快捷参数输入框填写 path / query / header
+  const pathInput = p
+    .$("debug-params")
+    .querySelector('input[data-param-name="id"][data-param-in="path"]');
+  const queryInput = p
+    .$("debug-params")
+    .querySelector('input[data-param-name="keyword"][data-param-in="query"]');
+  const headerInput = p
+    .$("debug-params")
+    .querySelector('input[data-param-name="X-Trace"][data-param-in="header"]');
+  pathInput.value = "42";
+  pathInput.dispatchEvent(new p.window.Event("input", { bubbles: true }));
+  queryInput.value = "alice";
+  queryInput.dispatchEvent(new p.window.Event("input", { bubbles: true }));
+  headerInput.value = "trace-99";
+  headerInput.dispatchEvent(new p.window.Event("input", { bubbles: true }));
+
+  assert.equal(
+    p.$("url").value,
+    "http://localhost:8080/users/42?keyword=alice",
+  );
+  assert.equal(JSON.parse(p.$("headers").value)["X-Trace"], "trace-99");
+
+  p.$("send").click();
+  assert.equal(p.sent.at(-1).op, "debug");
+  assert.equal(
+    p.sent.at(-1).url,
+    "http://localhost:8080/users/42?keyword=alice",
+  );
+  p.dom.window.close();
+});
+
+test("搜索筛选下文件夹右键提供仅筛选结果操作，单接口右键支持复制 cURL 与定位源码", () => {
+  const p = panel();
+  p.reply({ op: "scan", export: treeExport() });
+  p.$("search").value = "创建";
+  p.$("search").dispatchEvent(new p.window.Event("input", { bubbles: true }));
+
+  const group = findGroup(p, "用户管理");
+  const summary = group.querySelector(":scope > summary");
+  context(p, summary);
+  const uploadVisible = p
+    .$("context-menu")
+    .querySelector('[data-action="upload-visible"]');
+  assert.ok(!uploadVisible.classList.contains("hidden"));
+  action(p, "upload-visible");
+  assert.equal(p.sent.at(-1).op, "upload");
+  assert.deepEqual(p.sent.at(-1).selected, ["create-user"]);
+  p.reply({ op: "notice", message: "已同步" });
+
+  // 原 upload 仍针对文件夹内全部接口
+  context(p, summary);
+  action(p, "upload");
+  assert.deepEqual(p.sent.at(-1).selected, ["get-user", "create-user"]);
+  p.reply({ op: "notice", message: "已同步全部" });
+
+  const row = p.$("list").querySelector("[data-endpoint]");
+  context(p, row);
+  assert.ok(
+    !p
+      .$("context-menu")
+      .querySelector('[data-action="copy-curl"]')
+      .classList.contains("hidden"),
+  );
+  assert.ok(
+    !p
+      .$("context-menu")
+      .querySelector('[data-action="navigate"]')
+      .classList.contains("hidden"),
+  );
+  action(p, "copy-curl");
+  assert.equal(p.sent.at(-1).op, "copy");
+  assert.ok(p.sent.at(-1).text.includes("curl -X POST"));
+  p.reply({ op: "notice", message: "已复制" });
+
+  context(p, row);
+  action(p, "navigate");
+  assert.deepEqual(p.sent.at(-1), {
+    op: "navigate",
+    operationId: "create-user",
+  });
+  p.dom.window.close();
+});
+
+test("OpenAPI 标签页工具栏支持单接口同步、复制、定位并展示关联模型", () => {
+  const p = panel();
+  p.reply({ op: "scan", export: treeExport() });
+  assert.equal(JSON.parse(p.$("json").textContent).operationId, "get-user");
+  assert.ok(p.$("spec-schemas").textContent.includes("User"));
+
+  p.$("copy-spec").click();
+  assert.equal(p.sent.at(-1).op, "copy");
+  assert.ok(p.sent.at(-1).text.includes('"operationId": "get-user"'));
+  p.reply({ op: "notice", message: "已复制" });
+
+  p.$("sync-current").click();
+  assert.equal(p.sent.at(-1).op, "upload");
+  assert.deepEqual(p.sent.at(-1).selected, ["get-user"]);
+  p.reply({ op: "notice", message: "已上传" });
+
+  p.$("locate-current").click();
+  assert.deepEqual(p.sent.at(-1), {
+    op: "navigate",
+    operationId: "get-user",
+  });
+  p.dom.window.close();
+});
+
+test("错误诊断自动展开且支持点击文件名跳转，带警告接口在树中标记", () => {
+  const p = panel();
+  const e = treeExport();
+  e.warnings = [
+    "未找到类型 BrokenDto（src/main/java/demo/UserController.java）",
+  ];
+  e.endpoints[0].warnings = [
+    "未找到类型 BrokenDto（src/main/java/demo/UserController.java）",
+  ];
+  p.reply({ op: "scan", export: e });
+  assert.equal(p.$("diagnostics").open, true);
+
+  p.$("expand-all").click();
+  const firstRow = p.$("list").querySelector('[data-endpoint="0"]');
+  assert.ok(firstRow.classList.contains("has-warning"));
+
+  const link = p.$("diagnostic-list").querySelector(".diagnostic-link");
+  assert.ok(link);
+  assert.equal(link.textContent, "src/main/java/demo/UserController.java");
+  link.click();
+  assert.deepEqual(p.sent.at(-1), {
+    op: "navigate",
+    file: "src/main/java/demo/UserController.java",
+  });
+  p.dom.window.close();
+});
+
+test("宿主 focus-endpoint 推送与初始 focusOperationId 自动选中目标接口并切换标签页", () => {
+  const p = panel({
+    op: "config",
+    projectRoot: "/project",
+    config: {},
+    tokenSet: false,
+    focusOperationId: "create-user",
+    focusTab: "debug",
+  });
+  p.reply({ op: "scan", export: treeExport() });
+  assert.equal(JSON.parse(p.$("json").textContent).operationId, "create-user");
+  assert.equal(p.$("debug").classList.contains("hidden"), false);
+
+  // 运行时收到不带 clientId 的 focus-endpoint 推送
+  p.receive({
+    op: "focus-endpoint",
+    projectRoot: "/project",
+    operationId: "get-user",
+    tab: "spec",
+  });
+  assert.equal(JSON.parse(p.$("json").textContent).operationId, "get-user");
+  assert.equal(p.$("spec").classList.contains("hidden"), false);
   p.dom.window.close();
 });

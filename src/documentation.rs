@@ -62,6 +62,24 @@ pub fn controller_title(class: &Class) -> String {
         .unwrap_or_else(|| class.name.clone())
 }
 
+pub fn operation_tags(class: &Class, method: &Method) -> Vec<String> {
+    let tags: Vec<String> = method
+        .annotations
+        .iter()
+        .filter(|a| {
+            matches!(a.name.as_str(), "Operation" | "ApiOperation")
+                && !a.expressions.contains("tags")
+        })
+        .flat_map(|a| a.values("tags"))
+        .filter_map(|v| source::nonempty(&v))
+        .collect();
+    if tags.is_empty() {
+        vec![controller_title(class)]
+    } else {
+        tags
+    }
+}
+
 pub fn swagger_request_body(a: &Annotation) -> bool {
     a.name == "RequestBody"
         && (a.full_name == "io.swagger.v3.oas.annotations.parameters.RequestBody"
@@ -113,39 +131,48 @@ fn method_parameters(method: &Method) -> Vec<&Annotation> {
         )
         .collect()
 }
+fn matching_method_parameters<'a>(field: &'a Field, method: &'a Method) -> Vec<&'a Annotation> {
+    method_parameters(method)
+        .into_iter()
+        .filter(|a| {
+            a.text("name").is_some_and(|name| {
+                name == field.name
+                    || field
+                        .annotations
+                        .iter()
+                        .filter(|binding| {
+                            [
+                                "RequestParam",
+                                "PathVariable",
+                                "RequestHeader",
+                                "CookieValue",
+                                "QueryParam",
+                                "PathParam",
+                                "HeaderParam",
+                                "CookieParam",
+                            ]
+                            .contains(&binding.name.as_str())
+                        })
+                        .any(|binding| {
+                            binding
+                                .text("name")
+                                .or_else(|| binding.text("value"))
+                                .as_deref()
+                                == Some(&name)
+                        })
+            })
+        })
+        .collect()
+}
+pub fn parameter_annotation<'a>(field: &'a Field, method: &'a Method) -> Option<&'a Annotation> {
+    source::annotation(&field.annotations, "Parameter")
+        .or_else(|| matching_method_parameters(field, method).into_iter().next())
+}
 pub fn parameter_description(field: &Field, method: &Method) -> String {
     text(&field.annotations, &[("Parameter", "description")])
         .or_else(|| {
-            method_parameters(method)
+            matching_method_parameters(field, method)
                 .into_iter()
-                .filter(|a| {
-                    a.text("name").is_some_and(|name| {
-                        name == field.name
-                            || field
-                                .annotations
-                                .iter()
-                                .filter(|binding| {
-                                    [
-                                        "RequestParam",
-                                        "PathVariable",
-                                        "RequestHeader",
-                                        "CookieValue",
-                                        "QueryParam",
-                                        "PathParam",
-                                        "HeaderParam",
-                                        "CookieParam",
-                                    ]
-                                    .contains(&binding.name.as_str())
-                                })
-                                .any(|binding| {
-                                    binding
-                                        .text("name")
-                                        .or_else(|| binding.text("value"))
-                                        .as_deref()
-                                        == Some(&name)
-                                })
-                    })
-                })
                 .find_map(|a| a.text("description"))
         })
         .or_else(|| {

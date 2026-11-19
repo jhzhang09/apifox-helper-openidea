@@ -17,7 +17,7 @@ fn mock() -> MockHost {
 #[test]
 fn project_requests_match_official_plugin_protocol_and_never_put_token_in_url() {
     for teams in [false, true] {
-        let r = apifox::project_list_request(teams);
+        let r = apifox::project_list_request(&Config::default(), teams).unwrap();
         assert_eq!(r.method, "GET");
         assert!(r.body.is_none());
         assert!(r.url.starts_with("https://api.apifox.com/api/v1/user-"));
@@ -40,6 +40,48 @@ fn project_parser_handles_numeric_string_ids_deduplicates_and_filters_non_http()
     assert_eq!(projects.len(), 2);
     assert_eq!(projects[1].id, "9007199254740993");
     assert_ne!(projects[0].team_id, projects[1].team_id);
+}
+
+#[test]
+fn private_server_routes_all_requests_with_separate_credentials() {
+    let mut config = Config {
+        private_api_url: "https://internal.example:8443/gateway/".into(),
+        project_id: "42".into(),
+        ..Default::default()
+    };
+    for (request, path) in [
+        (
+            apifox::project_list_request(&config, false).unwrap(),
+            "/api/v1/user-projects",
+        ),
+        (
+            apifox::project_list_request(&config, true).unwrap(),
+            "/api/v1/user-teams?locale=zh-CN",
+        ),
+        (
+            apifox::import_request(&config, &json!({})).unwrap(),
+            "/v1/projects/42/import-openapi?locale=zh-CN",
+        ),
+    ] {
+        assert_eq!(
+            request.url,
+            format!("https://internal.example:8443/gateway{path}")
+        );
+        assert!(request.headers.contains(&(
+            "Authorization".into(),
+            "Bearer {{secret:apifox_private_token}}".into()
+        )));
+    }
+    for invalid in [
+        "http://internal",
+        "https://user:pass@internal",
+        "https://internal?token=test",
+        "https://internal/#fragment",
+    ] {
+        config.private_api_url = invalid.into();
+        assert!(apifox::project_list_request(&config, false).is_err());
+        assert!(apifox::import_request(&config, &json!({})).is_err());
+    }
 }
 #[test]
 fn failures_malformed_envelopes_and_conflicting_projects_are_not_empty_success() {
@@ -97,7 +139,7 @@ fn host_fetches_projects_and_teams_with_keychain_substitution_only() {
             ..Default::default()
         })
     });
-    let response = apifox::list_projects().unwrap();
+    let response = apifox::list_projects(&Config::default()).unwrap();
     assert_eq!(h.requests().len(), 2);
     assert_eq!(response.projects[0].team_name, "团队 A");
     assert!(response.notices.is_empty());
@@ -120,7 +162,7 @@ fn missing_secret_denied_access_and_server_errors_do_not_mutate_config() {
         .unwrap(),
     )
     .unwrap();
-    assert!(apifox::list_projects().is_err());
+    assert!(apifox::list_projects(&Config::default()).is_err());
     assert!(h.requests().is_empty());
     h.set_secret("apifox_token", "test-only");
     h.on_fetch(|_| {
@@ -130,7 +172,7 @@ fn missing_secret_denied_access_and_server_errors_do_not_mutate_config() {
         })
     });
     assert!(
-        apifox::list_projects()
+        apifox::list_projects(&Config::default())
             .unwrap_err()
             .to_string()
             .contains("过期")
@@ -139,7 +181,10 @@ fn missing_secret_denied_access_and_server_errors_do_not_mutate_config() {
     assert_eq!(load_config(&h.invocation()).unwrap().project_id, "123");
     let h = MockHost::install().with_capabilities(&["secrets"]);
     h.set_secret("apifox_token", "test-only");
-    assert!(matches!(apifox::list_projects(), Err(Error::Denied(_))));
+    assert!(matches!(
+        apifox::list_projects(&Config::default()),
+        Err(Error::Denied(_))
+    ));
 }
 #[test]
 fn team_name_failure_preserves_usable_projects_with_visible_notice() {
@@ -156,7 +201,7 @@ fn team_name_failure_preserves_usable_projects_with_visible_notice() {
             Err(Error::Failed("temporary failure".into()))
         }
     });
-    let r = apifox::list_projects().unwrap();
+    let r = apifox::list_projects(&Config::default()).unwrap();
     assert_eq!(r.projects[0].team_name, "团队 8");
     assert_eq!(r.notices.len(), 1);
 }

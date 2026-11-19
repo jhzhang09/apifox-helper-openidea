@@ -46,3 +46,33 @@ pub fn pom_artifact_id(xml: &str) -> Option<String> {
     }
     None
 }
+
+/// 从 Gradle 的 settings.gradle(.kts) / build.gradle(.kts) 读取安全的项目/模块名称。
+pub fn gradle_project_name(text: &str) -> Option<String> {
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') {
+            continue;
+        }
+        for prefix in ["rootProject.name", "archivesBaseName"] {
+            if let Some(rest) = line.strip_prefix(prefix) {
+                let rest = rest.trim_start();
+                if let Some(rhs) = rest.strip_prefix('=') {
+                    let rhs = rhs.trim().trim_end_matches(';').trim();
+                    let quote = rhs.chars().next()?;
+                    if (quote == '"' || quote == '\'') && rhs.ends_with(quote) && rhs.len() >= 2 {
+                        let inner = rhs[1..rhs.len() - 1].trim();
+                        if !inner.is_empty()
+                            && inner
+                                .chars()
+                                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+                        {
+                            return Some(inner.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
