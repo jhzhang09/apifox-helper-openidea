@@ -47,10 +47,16 @@ impl ProjectSettings {
         let text = text
             .lines()
             .map(|line| {
-                if let Some((key, value)) = line.split_once(':') {
-                    let v = value.trim();
-                    if v.starts_with('@') && v.ends_with('@') && v.len() > 2 {
-                        return format!("{key}: {}", serde_json::json!(v));
+                if !line.trim_start().starts_with('#')
+                    && let Some((key, value)) = line.split_once(':')
+                {
+                    let trimmed = value.trim();
+                    let scalar = trimmed
+                        .split_once(" #")
+                        .map(|(head, _)| head.trim_end())
+                        .unwrap_or(trimmed);
+                    if scalar.starts_with('@') && scalar.len() > 2 && scalar[1..].contains('@') {
+                        return format!("{key}: {}", serde_json::json!(scalar));
                     }
                 }
                 line.to_string()

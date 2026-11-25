@@ -1,7 +1,7 @@
 //! 以完整类型签名注册模型，泛型实例各自生成组件，循环引用保留为 $ref。
 use crate::source::{self, Class, Field, annotation, has};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Type {
@@ -90,6 +90,155 @@ impl Type {
     }
 }
 
+pub(crate) enum ResolveOutcome<'a> {
+    Found(&'a Class),
+    Ambiguous(BTreeSet<String>),
+    Missing,
+}
+
+pub(crate) struct ClassIndex<'a> {
+    classes: &'a [Class],
+    qualified: Vec<String>,
+    by_qualified: HashMap<String, usize>,
+    by_simple: HashMap<&'a str, Vec<usize>>,
+}
+
+impl<'a> ClassIndex<'a> {
+    pub(crate) fn new(classes: &'a [Class]) -> Self {
+        let mut qualified = Vec::with_capacity(classes.len());
+        let mut by_qualified = HashMap::with_capacity(classes.len());
+        let mut by_simple: HashMap<&'a str, Vec<usize>> = HashMap::with_capacity(classes.len());
+        for (idx, class) in classes.iter().enumerate() {
+            let q = class.qualified();
+            by_qualified.entry(q.clone()).or_insert(idx);
+            qualified.push(q);
+            by_simple.entry(class.name.as_str()).or_default().push(idx);
+        }
+        Self {
+            classes,
+            qualified,
+            by_qualified,
+            by_simple,
+        }
+    }
+
+    pub(crate) fn get_qualified(&self, q: &str) -> Option<&'a Class> {
+        self.by_qualified.get(q).map(|&idx| &self.classes[idx])
+    }
+
+    pub(crate) fn contains_qualified(&self, q: &str) -> bool {
+        self.by_qualified.contains_key(q)
+    }
+
+    pub(crate) fn resolve(
+        &self,
+        name: &str,
+        ctx: &Class,
+        respect_external: bool,
+    ) -> ResolveOutcome<'a> {
+        if name.contains('.')
+            && let Some(c) = self.get_qualified(name)
+        {
+            return ResolveOutcome::Found(c);
+        }
+        let mut buf = String::new();
+        let mut enclosing = ctx.name.as_str();
+        loop {
+            buf.clear();
+            if !ctx.package.is_empty() {
+                buf.push_str(&ctx.package);
+                buf.push('.');
+            }
+            buf.push_str(enclosing);
+            buf.push('.');
+            buf.push_str(name);
+            if let Some(c) = self.get_qualified(&buf) {
+                return ResolveOutcome::Found(c);
+            }
+            match enclosing.rsplit_once('.') {
+                Some((parent, _)) => enclosing = parent,
+                None => break,
+            }
+        }
+        // 显式导入先绑定名称；即使源码不可用，也不能改绑到通配或同包类型。
+        let explicit: BTreeSet<&str> = ctx
+            .imports
+            .iter()
+            .filter(|i| !i.ends_with(".*") && i.rsplit('.').next() == Some(name))
+            .map(String::as_str)
+            .collect();
+        if !explicit.is_empty() {
+            return if explicit.len() > 1 {
+                ResolveOutcome::Ambiguous(explicit.into_iter().map(str::to_owned).collect())
+            } else if let Some(c) = explicit.first().and_then(|w| self.get_qualified(w)) {
+                ResolveOutcome::Found(c)
+            } else {
+                ResolveOutcome::Missing
+            };
+        }
+        buf.clear();
+        if !ctx.package.is_empty() {
+            buf.push_str(&ctx.package);
+            buf.push('.');
+        }
+        buf.push_str(name);
+        if let Some(c) = self.get_qualified(&buf) {
+            return ResolveOutcome::Found(c);
+        }
+        let external = if respect_external {
+            Schemas::external_name(name, ctx)
+        } else {
+            String::new()
+        };
+        let mut wildcard = BTreeSet::new();
+        for p in ctx.imports.iter().filter_map(|i| i.strip_suffix(".*")) {
+            buf.clear();
+            buf.push_str(p);
+            buf.push('.');
+            buf.push_str(name);
+            if self.contains_qualified(&buf)
+                || (respect_external && external != name && external == buf)
+            {
+                wildcard.insert(buf.clone());
+            }
+        }
+        if !wildcard.is_empty() {
+            return if wildcard.len() > 1 {
+                ResolveOutcome::Ambiguous(wildcard)
+            } else if let Some(c) = wildcard.first().and_then(|w| self.get_qualified(w)) {
+                ResolveOutcome::Found(c)
+            } else {
+                ResolveOutcome::Missing
+            };
+        }
+        // 已知外部通配 import 不能被项目其他包中的同名类抢占。
+        if respect_external && external != name {
+            return ResolveOutcome::Missing;
+        }
+        let Some(indices) = self.by_simple.get(name) else {
+            return ResolveOutcome::Missing;
+        };
+        let candidates: BTreeSet<String> = indices
+            .iter()
+            .map(|&idx| self.qualified[idx].clone())
+            .collect();
+        if candidates.len() > 1 {
+            ResolveOutcome::Ambiguous(candidates)
+        } else if let Some(c) = candidates.first().and_then(|w| self.get_qualified(w)) {
+            ResolveOutcome::Found(c)
+        } else {
+            ResolveOutcome::Missing
+        }
+    }
+
+    pub(crate) fn resolve_quiet(&self, name: &str, ctx: &Class) -> Option<&'a Class> {
+        match self.resolve(name, ctx, false) {
+            ResolveOutcome::Found(c) => Some(c),
+            ResolveOutcome::Ambiguous(_) | ResolveOutcome::Missing => None,
+        }
+    }
+}
+
 pub struct Schemas<'a> {
     pub classes: &'a [Class],
     pub components: BTreeMap<String, Value>,
@@ -104,6 +253,7 @@ pub struct Schemas<'a> {
     pub op_touched: BTreeSet<String>,
     types: BTreeMap<String, Type>,
     project: crate::project::ProjectContext,
+    pub(crate) index: ClassIndex<'a>,
 }
 impl<'a> Schemas<'a> {
     pub fn new(classes: &'a [Class]) -> Self {
@@ -124,6 +274,7 @@ impl<'a> Schemas<'a> {
             op_touched: BTreeSet::new(),
             types: BTreeMap::new(),
             project: project.clone(),
+            index: ClassIndex::new(classes),
         }
     }
     pub fn begin_operation(&mut self) {
@@ -154,83 +305,18 @@ impl<'a> Schemas<'a> {
         }
     }
     pub fn resolve(&mut self, name: &str, ctx: &Class) -> Option<&'a Class> {
-        if name.contains('.')
-            && let Some(c) = self.classes.iter().find(|c| c.qualified() == name)
-        {
-            return Some(c);
-        }
-        let mut enclosing = ctx.name.as_str();
-        loop {
-            let candidate = format!("{}.{}.{name}", ctx.package, enclosing)
-                .trim_start_matches('.')
-                .to_string();
-            if let Some(c) = self.classes.iter().find(|c| c.qualified() == candidate) {
-                return Some(c);
+        match self.index.resolve(name, ctx, true) {
+            ResolveOutcome::Found(c) => Some(c),
+            ResolveOutcome::Ambiguous(candidates) => {
+                self.warn(format!(
+                    "类型 {name} 存在歧义（{}）：{}，未选择任一模型",
+                    ctx.path,
+                    candidates.into_iter().collect::<Vec<_>>().join("、")
+                ));
+                None
             }
-            match enclosing.rsplit_once('.') {
-                Some((parent, _)) => enclosing = parent,
-                None => break,
-            }
+            ResolveOutcome::Missing => None,
         }
-        // 显式导入先绑定名称；即使源码不可用，也不能改绑到通配或同包类型。
-        let explicit: BTreeSet<_> = ctx
-            .imports
-            .iter()
-            .filter(|i| !i.ends_with(".*") && i.rsplit('.').next() == Some(name))
-            .cloned()
-            .collect();
-        if !explicit.is_empty() {
-            return self.bind_candidates(name, ctx, explicit);
-        }
-        if let Some(c) = self
-            .classes
-            .iter()
-            .find(|c| c.qualified() == format!("{}.{name}", ctx.package).trim_start_matches('.'))
-        {
-            return Some(c);
-        }
-        let external = Self::external_name(name, ctx);
-        let wildcard: BTreeSet<_> = ctx
-            .imports
-            .iter()
-            .filter_map(|i| i.strip_suffix(".*"))
-            .map(|p| format!("{p}.{name}"))
-            .filter(|wanted| {
-                self.classes.iter().any(|c| c.qualified() == *wanted)
-                    || (external != name && external == *wanted)
-            })
-            .collect();
-        if !wildcard.is_empty() {
-            return self.bind_candidates(name, ctx, wildcard);
-        }
-        // 已知外部通配 import 不能被项目其他包中的同名类抢占。
-        if Self::external_name(name, ctx) != name {
-            return None;
-        }
-        let candidates = self
-            .classes
-            .iter()
-            .filter(|c| c.name == name)
-            .map(Class::qualified)
-            .collect();
-        self.bind_candidates(name, ctx, candidates)
-    }
-    fn bind_candidates(
-        &mut self,
-        name: &str,
-        ctx: &Class,
-        candidates: BTreeSet<String>,
-    ) -> Option<&'a Class> {
-        if candidates.len() > 1 {
-            self.warn(format!(
-                "类型 {name} 存在歧义（{}）：{}，未选择任一模型",
-                ctx.path,
-                candidates.into_iter().collect::<Vec<_>>().join("、")
-            ));
-            return None;
-        }
-        let wanted = candidates.first()?;
-        self.classes.iter().find(|c| c.qualified() == *wanted)
     }
     fn canonical(&mut self, ty: &Type, ctx: &Class) -> Type {
         Type {
@@ -257,6 +343,28 @@ impl<'a> Schemas<'a> {
             "java.util.Properties",
             "cn.hutool.core.lang.tree.Tree",
             "org.springframework.web.servlet.mvc.method.annotation.SseEmitter",
+            "org.springframework.core.io.Resource",
+            "org.springframework.core.io.InputStreamResource",
+            "org.springframework.core.io.ByteArrayResource",
+            "org.springframework.core.io.FileSystemResource",
+            "org.springframework.core.io.PathResource",
+            "org.springframework.core.io.UrlResource",
+            "org.springframework.data.util.Pair",
+            "cn.hutool.core.lang.Dict",
+            "cn.hutool.json.JSONObject",
+            "cn.hutool.json.JSONArray",
+            "com.alibaba.fastjson.JSONObject",
+            "com.alibaba.fastjson.JSONArray",
+            "com.alibaba.fastjson2.JSONObject",
+            "com.alibaba.fastjson2.JSONArray",
+            "org.json.JSONObject",
+            "org.json.JSONArray",
+            "com.fasterxml.jackson.databind.JsonNode",
+            "com.fasterxml.jackson.databind.node.ObjectNode",
+            "com.fasterxml.jackson.databind.node.ArrayNode",
+            "com.google.gson.JsonObject",
+            "com.google.gson.JsonArray",
+            "com.google.gson.JsonElement",
         ] {
             if full.rsplit('.').next() == Some(name)
                 && ctx
@@ -296,18 +404,104 @@ impl<'a> Schemas<'a> {
             .first()
             .cloned()
             .unwrap_or_else(|| Type::parse("Object"));
-        let external = self
-            .resolve(&ty.name, ctx)
-            .map(Class::qualified)
-            .unwrap_or_else(|| Self::external_name(&ty.name, ctx));
-        if external == "java.util.Properties" {
-            return json!({"type":"object","additionalProperties":{},"description":"Properties 动态键值对象"});
-        }
-        if external == "cn.hutool.core.lang.tree.Tree" {
-            return self.hutool_tree(ty, ctx);
-        }
-        if external == "org.springframework.web.servlet.mvc.method.annotation.SseEmitter" {
-            return json!({"type":"string","description":"SSE 事件流"});
+        if matches!(
+            simple,
+            "Properties"
+                | "Tree"
+                | "SseEmitter"
+                | "Resource"
+                | "InputStreamResource"
+                | "ByteArrayResource"
+                | "FileSystemResource"
+                | "PathResource"
+                | "UrlResource"
+                | "Pair"
+                | "Dict"
+                | "JSONObject"
+                | "JSONArray"
+                | "JsonNode"
+                | "ObjectNode"
+                | "ArrayNode"
+                | "JsonObject"
+                | "JsonArray"
+                | "JsonElement"
+        ) {
+            let external = self
+                .resolve(&ty.name, ctx)
+                .map(Class::qualified)
+                .unwrap_or_else(|| Self::external_name(&ty.name, ctx));
+            match external.as_str() {
+                "java.util.Properties" => {
+                    return json!({"type":"object","additionalProperties":{},"description":"Properties 动态键值对象"});
+                }
+                "cn.hutool.core.lang.tree.Tree" => return self.hutool_tree(ty, ctx),
+                "org.springframework.web.servlet.mvc.method.annotation.SseEmitter" => {
+                    return json!({"type":"string","description":"SSE 事件流"});
+                }
+                "org.springframework.core.io.Resource"
+                | "org.springframework.core.io.InputStreamResource"
+                | "org.springframework.core.io.ByteArrayResource"
+                | "org.springframework.core.io.FileSystemResource"
+                | "org.springframework.core.io.PathResource"
+                | "org.springframework.core.io.UrlResource" => {
+                    return json!({"type":"string","format":"binary"});
+                }
+                "cn.hutool.core.lang.Dict"
+                | "cn.hutool.json.JSONObject"
+                | "com.alibaba.fastjson.JSONObject"
+                | "com.alibaba.fastjson2.JSONObject"
+                | "org.json.JSONObject"
+                | "com.fasterxml.jackson.databind.node.ObjectNode"
+                | "com.google.gson.JsonObject" => {
+                    self.notice(format!(
+                        "{simple} 为动态 JSON 对象，未确定的键按 additionalProperties 保留（{}）",
+                        ctx.path
+                    ));
+                    return json!({"type":"object","additionalProperties":{}});
+                }
+                "cn.hutool.json.JSONArray"
+                | "com.alibaba.fastjson.JSONArray"
+                | "com.alibaba.fastjson2.JSONArray"
+                | "org.json.JSONArray"
+                | "com.fasterxml.jackson.databind.node.ArrayNode"
+                | "com.google.gson.JsonArray" => {
+                    self.notice(format!(
+                        "{simple} 为动态 JSON 数组，元素结构保持开放（{}）",
+                        ctx.path
+                    ));
+                    return json!({"type":"array","items":{}});
+                }
+                "com.fasterxml.jackson.databind.JsonNode" | "com.google.gson.JsonElement" => {
+                    self.notice(format!(
+                        "{simple} 为任意 JSON 值，结构保持开放（{}）",
+                        ctx.path
+                    ));
+                    return json!({});
+                }
+                "org.springframework.data.util.Pair" => {
+                    let first_ty = ty
+                        .args
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| Type::parse("Object"));
+                    let second_ty = ty
+                        .args
+                        .get(1)
+                        .cloned()
+                        .unwrap_or_else(|| Type::parse("Object"));
+                    let first_schema = self.schema(&first_ty, ctx);
+                    let second_schema = self.schema(&second_ty, ctx);
+                    return json!({
+                        "type": "object",
+                        "properties": {
+                            "first": first_schema,
+                            "second": second_schema
+                        },
+                        "x-apifox-orders": ["first", "second"]
+                    });
+                }
+                _ => (),
+            }
         }
         match simple {
             "ResponseEntity" | "HttpEntity" | "Optional" | "Mono" | "CompletionStage"
@@ -355,7 +549,11 @@ impl<'a> Schemas<'a> {
             ));
             return json!({"type":"object","description":format!("未解析类型：{}",ty.signature()),"x-apifox-unresolved":ty.signature()});
         };
-        let resolved = self.canonical(ty, ctx);
+        let resolved = Type {
+            name: class.qualified(),
+            args: ty.args.iter().map(|t| self.canonical(t, ctx)).collect(),
+            ..ty.clone()
+        };
         let signature = resolved.signature();
         // 完整签名只作内部标识；导出时统一映射为可读模型名。
         let key = component_key(&signature);

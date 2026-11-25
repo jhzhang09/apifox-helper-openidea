@@ -142,78 +142,173 @@ pub fn production_source(path: &str) -> bool {
 }
 
 pub fn lex(source: &str) -> Vec<Token> {
-    let c: Vec<char> = source.chars().collect();
+    lex_with_mode(source, false)
+}
+
+fn lex_with_mode(source: &str, kotlin: bool) -> Vec<Token> {
+    let bytes = source.as_bytes();
     let mut out = Vec::new();
-    let (mut i, mut line) = (0, 0);
-    while i < c.len() {
+    let (mut i, mut line) = (0usize, 0u32);
+    while i < bytes.len() {
         let start = i;
         let at = line;
-        if c[i].is_whitespace() {
-            if c[i] == '\n' {
+        let b = bytes[i];
+        if b.is_ascii_whitespace() {
+            if b == b'\n' {
                 line += 1;
             }
             i += 1;
             continue;
         }
-        if c[i] == '/' && c.get(i + 1) == Some(&'/') {
-            let doc = c.get(i + 2) == Some(&'/');
+        if b >= 0x80
+            && let Some(ch) = source[i..].chars().next()
+            && ch.is_whitespace()
+        {
+            i += ch.len_utf8();
+            continue;
+        }
+        if b == b'/' && bytes.get(i + 1) == Some(&b'/') {
+            let doc = bytes.get(i + 2) == Some(&b'/');
             i += 2;
-            while i < c.len() && c[i] != '\n' {
+            while i < bytes.len() && bytes[i] != b'\n' {
                 i += 1;
             }
             if doc {
                 out.push(Token {
-                    text: format!("/** {} */", c[start + 3..i].iter().collect::<String>()),
+                    text: format!("/** {} */", &source[start + 3..i]),
                     line: at,
                 });
             }
             continue;
         }
-        if c[i] == '/' && c.get(i + 1) == Some(&'*') {
-            let doc = c.get(i + 2) == Some(&'*');
+        if b == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            let doc = bytes.get(i + 2) == Some(&b'*');
             i += 2;
-            while i < c.len() && !(c[i] == '*' && c.get(i + 1) == Some(&'/')) {
-                if c[i] == '\n' {
-                    line += 1;
+            if kotlin {
+                let mut depth = 1usize;
+                while i < bytes.len() && depth > 0 {
+                    if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        if bytes[i] == b'\n' {
+                            line += 1;
+                        }
+                        i += 1;
+                    }
                 }
-                i += 1;
+            } else {
+                while i < bytes.len() && !(bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/')) {
+                    if bytes[i] == b'\n' {
+                        line += 1;
+                    }
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
             }
-            i = (i + 2).min(c.len());
             if doc {
                 out.push(Token {
-                    text: c[start..i].iter().collect(),
+                    text: source[start..i].to_owned(),
                     line: at,
                 });
             }
             continue;
         }
-        if c[i] == '"' || c[i] == '\'' || c[i] == '`' {
-            let q = c[i];
+        if b == b'"' && bytes.get(i + 1) == Some(&b'"') && bytes.get(i + 2) == Some(&b'"') {
+            i += 3;
+            while i < bytes.len() {
+                let cur = bytes[i];
+                if cur == b'\n' {
+                    line += 1;
+                    i += 1;
+                } else if !kotlin && cur == b'\\' {
+                    i += 1;
+                    if let Some(ch) = source[i..].chars().next() {
+                        if ch == '\n' {
+                            line += 1;
+                        } else if ch == '\r' && bytes.get(i + 1) == Some(&b'\n') {
+                            line += 1;
+                            i += 1;
+                        }
+                        i += ch.len_utf8();
+                    }
+                } else if cur == b'"'
+                    && bytes.get(i + 1) == Some(&b'"')
+                    && bytes.get(i + 2) == Some(&b'"')
+                {
+                    if kotlin {
+                        while bytes.get(i + 3) == Some(&b'"') {
+                            i += 1;
+                        }
+                    }
+                    i += 3;
+                    break;
+                } else if cur < 0x80 {
+                    i += 1;
+                } else {
+                    i += source[i..].chars().next().unwrap().len_utf8();
+                }
+            }
+        } else if matches!(b, b'"' | b'\'' | b'`') {
+            let q = b;
             i += 1;
-            while i < c.len() {
-                if c[i] == '\n' {
+            while i < bytes.len() {
+                let cur = bytes[i];
+                if cur == b'\n' {
                     line += 1;
-                }
-                if c[i] == '\\' {
-                    i = (i + 2).min(c.len());
-                    continue;
-                }
-                if c[i] == q {
+                    i += 1;
+                } else if cur == b'\\' {
+                    i += 1;
+                    if let Some(ch) = source[i..].chars().next() {
+                        if ch == '\n' {
+                            line += 1;
+                        }
+                        i += ch.len_utf8();
+                    }
+                } else if cur == q {
                     i += 1;
                     break;
+                } else if cur < 0x80 {
+                    i += 1;
+                } else {
+                    i += source[i..].chars().next().unwrap().len_utf8();
                 }
-                i += 1;
             }
-        } else if c[i].is_alphanumeric() || c[i] == '_' || c[i] == '$' {
+        } else if b.is_ascii_alphanumeric()
+            || b == b'_'
+            || b == b'$'
+            || (b >= 0x80 && source[i..].chars().next().unwrap().is_alphanumeric())
+        {
+            if b < 0x80 {
+                i += 1;
+            } else {
+                i += source[i..].chars().next().unwrap().len_utf8();
+            }
+            while i < bytes.len() {
+                let cur = bytes[i];
+                if cur.is_ascii_alphanumeric() || cur == b'_' || cur == b'$' {
+                    i += 1;
+                } else if cur >= 0x80 {
+                    let ch = source[i..].chars().next().unwrap();
+                    if ch.is_alphanumeric() {
+                        i += ch.len_utf8();
+                    } else {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+            }
+        } else if b < 0x80 {
             i += 1;
-            while i < c.len() && (c[i].is_alphanumeric() || c[i] == '_' || c[i] == '$') {
-                i += 1;
-            }
         } else {
-            i += 1;
+            i += source[i..].chars().next().unwrap().len_utf8();
         }
         out.push(Token {
-            text: c[start..i].iter().collect(),
+            text: source[start..i].to_owned(),
             line: at,
         });
     }
@@ -279,6 +374,44 @@ fn without_type_annotations(ts: &[Token]) -> Vec<Token> {
     clean
 }
 fn unquote(s: &str) -> String {
+    if let Some(inner) = s
+        .strip_prefix("\"\"\"")
+        .and_then(|s| s.strip_suffix("\"\"\""))
+    {
+        let trimmed_start = inner.trim_start_matches([' ', '\t']);
+        let body = trimmed_start
+            .strip_prefix("\r\n")
+            .or_else(|| trimmed_start.strip_prefix('\n'))
+            .unwrap_or(inner);
+        let lines: Vec<&str> = body.lines().collect();
+        let last_is_indent = body.ends_with('\n')
+            || lines
+                .last()
+                .is_some_and(|l| l.chars().all(|c| c == ' ' || c == '\t'));
+        let indent = lines
+            .iter()
+            .enumerate()
+            .filter(|(idx, l)| {
+                !l.trim().is_empty() || (last_is_indent && *idx + 1 == lines.len() && !l.is_empty())
+            })
+            .map(|(_, l)| l.bytes().take_while(|b| matches!(b, b' ' | b'\t')).count())
+            .min()
+            .unwrap_or(0);
+        let mut out: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                if l.trim().is_empty() {
+                    String::new()
+                } else {
+                    l.get(indent..).unwrap_or(l).to_string()
+                }
+            })
+            .collect();
+        if last_is_indent && out.last().is_some_and(|l| l.is_empty()) {
+            out.pop();
+        }
+        return out.join("\n");
+    }
     serde_json::from_str::<String>(s)
         .unwrap_or_else(|_| s.trim_matches(['"', '\'', '`']).to_string())
 }
@@ -444,30 +577,37 @@ fn prefix(ts: &[Token], mut i: usize) -> (Vec<Annotation>, String, usize) {
             let (a, n) = parse_annotation(ts, i);
             anns.push(a);
             i = n;
-        } else if matches!(
-            t(ts, i),
-            "public"
-                | "private"
-                | "protected"
-                | "internal"
-                | "static"
-                | "final"
-                | "abstract"
-                | "override"
-                | "open"
-                | "suspend"
-                | "inline"
-                | "lateinit"
-                | "transient"
-                | "volatile"
-                | "synchronized"
-                | "native"
-                | "default"
-                | "external"
-                | "actual"
-                | "expect"
-                | "const"
-        ) {
+        } else if t(ts, i) == "non" && t(ts, i + 1) == "-" && t(ts, i + 2) == "sealed" {
+            i += 3;
+        } else if (t(ts, i) == "sealed" && matches!(t(ts, i + 1), "class" | "interface"))
+            || (matches!(t(ts, i), "inner" | "value") && t(ts, i + 1) == "class")
+            || (t(ts, i) == "fun" && t(ts, i + 1) == "interface")
+            || (t(ts, i) == "data" && matches!(t(ts, i + 1), "class" | "object"))
+            || matches!(
+                t(ts, i),
+                "public"
+                    | "private"
+                    | "protected"
+                    | "internal"
+                    | "static"
+                    | "final"
+                    | "abstract"
+                    | "override"
+                    | "open"
+                    | "suspend"
+                    | "inline"
+                    | "lateinit"
+                    | "transient"
+                    | "volatile"
+                    | "synchronized"
+                    | "native"
+                    | "default"
+                    | "external"
+                    | "actual"
+                    | "expect"
+                    | "const"
+            )
+        {
             i += 1;
         } else {
             break;
@@ -513,9 +653,15 @@ fn field(ts: &[Token], kotlin: bool) -> Option<Field> {
 }
 
 pub fn parse(path: &str, source: &str) -> Vec<Class> {
-    let ts = lex(source);
-    if !syntax_issues(&ts).is_empty() {
-        return Vec::new();
+    parse_checked(path, source).unwrap_or_default()
+}
+
+/// 词法扫描与语法检查合并为单次遍历，未闭合的编辑缓冲区返回具体行号问题。
+pub fn parse_checked(path: &str, source: &str) -> Result<Vec<Class>, Vec<String>> {
+    let ts = lex_with_mode(source, path.ends_with(".kt"));
+    let issues = syntax_issues(&ts);
+    if !issues.is_empty() {
+        return Err(issues);
     }
     let mut classes = parse_tokens(path, &ts, "", &[], &[], "");
     for class in &mut classes {
@@ -533,7 +679,7 @@ pub fn parse(path: &str, source: &str) -> Vec<Class> {
             }
         }
     }
-    classes
+    Ok(classes)
 }
 
 fn qualify_annotations(annotations: &mut [Annotation], imports: &[String]) {

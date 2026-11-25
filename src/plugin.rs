@@ -96,10 +96,19 @@ fn relative(root: &str, path: &str) -> String {
         .trim_start_matches('/')
         .replace('\\', "/")
 }
-pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
-    let project = project(ctx)?;
-    let root = project.root()?;
-    let config = load_config(ctx)?;
+struct ProjectSources {
+    classes: Vec<source::Class>,
+    settings: crate::project::ProjectSettings,
+    warnings: Vec<String>,
+    config_notices: Vec<String>,
+}
+
+fn load_project_sources(
+    project: &host::Project,
+    root: &str,
+    strict_syntax: bool,
+    report_progress: bool,
+) -> Result<ProjectSources, Error> {
     let mut paths = project.find_files("**/*.java", FILE_LIMIT)?;
     let kt = project.find_files("**/*.kt", FILE_LIMIT)?;
     if paths.len() >= FILE_LIMIT as usize || kt.len() >= FILE_LIMIT as usize {
@@ -108,16 +117,17 @@ pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
     paths.extend(kt);
     paths.sort();
     paths.dedup();
+    let production_paths: Vec<String> = paths
+        .into_iter()
+        .filter(|p| source::production_source(&relative(root, p)))
+        .collect();
+    let total = production_paths.len();
     let mut classes = Vec::new();
     let mut settings = crate::project::ProjectSettings::default();
     let mut bytes = 0;
-    let task = host::begin_task("解析 API 和数据模型", true);
-    for (i, path) in paths
-        .iter()
-        .filter(|p| source::production_source(&relative(&root, p)))
-        .enumerate()
-    {
-        if task.is_cancelled() {
+    let task = report_progress.then(|| host::begin_task("解析 API 和数据模型", true));
+    for (i, path) in production_paths.iter().enumerate() {
+        if task.as_ref().is_some_and(|t| t.is_cancelled()) {
             return Err(Error::Cancelled);
         }
         // read_file 已优先读取未保存缓冲区；恢复的标签页不一定有版本化内存文档。
@@ -126,16 +136,72 @@ pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
         if bytes > MAX_SOURCE_BYTES {
             return Err("源码大小超过 64 MiB，已停止导出".into());
         }
-        let issues = source::issues(&text);
-        if !issues.is_empty() {
-            return Err(
-                format!("{}：{}，请完成源码编辑后重新扫描", path, issues.join("；")).into(),
-            );
+        let rel = relative(root, path);
+        match source::parse_checked(&rel, &text) {
+            Ok(parsed) => classes.extend(parsed),
+            Err(issues) => {
+                if strict_syntax {
+                    return Err(format!(
+                        "{}：{}，请完成源码编辑后重新扫描",
+                        path,
+                        issues.join("；")
+                    )
+                    .into());
+                }
+            }
         }
-        classes.extend(source::parse(&relative(&root, path), &text));
         settings.java(&text);
-        task.report(i as u32, Some(paths.len() as u32), Some(path));
+        if let Some(task) = &task
+            && (i % 32 == 0 || i + 1 == total)
+        {
+            task.report(i as u32, Some(total as u32), Some(path));
+        }
     }
+    let mut warnings = Vec::new();
+    if project.exists(".apifox-helper.properties")? {
+        warnings = crate::rules::apply(
+            &mut classes,
+            &project.read_file(".apifox-helper.properties")?,
+        );
+    }
+    let mut config_notices = Vec::new();
+    for glob in [
+        "**/application.yml",
+        "**/application.yaml",
+        "**/application.properties",
+    ] {
+        let files = project.find_files(glob, 1000)?;
+        if files.len() >= 1000 {
+            return Err("基础配置文件超过扫描上限".into());
+        }
+        for path in files
+            .into_iter()
+            .filter(|p| !source::ignored_path(&relative(root, p)))
+        {
+            let text = project.read_file(&path)?;
+            if let Err(error) = settings.config(&path, &text) {
+                config_notices.push(error);
+            }
+        }
+    }
+    Ok(ProjectSources {
+        classes,
+        settings,
+        warnings,
+        config_notices,
+    })
+}
+
+pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
+    let project = project(ctx)?;
+    let root = project.root()?;
+    let config = load_config(ctx)?;
+    let ProjectSources {
+        classes,
+        settings,
+        warnings,
+        config_notices,
+    } = load_project_sources(&project, &root, true, true)?;
     let mut scope = Scope::default();
     match scope_name {
         "project" => (),
@@ -162,33 +228,6 @@ pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
             }
         }
         _ => return Err("无效的扫描范围".into()),
-    }
-    let mut warnings = Vec::new();
-    if project.exists(".apifox-helper.properties")? {
-        warnings = crate::rules::apply(
-            &mut classes,
-            &project.read_file(".apifox-helper.properties")?,
-        );
-    }
-    let mut config_notices = Vec::new();
-    for glob in [
-        "**/application.yml",
-        "**/application.yaml",
-        "**/application.properties",
-    ] {
-        let files = project.find_files(glob, 1000)?;
-        if files.len() >= 1000 {
-            return Err("基础配置文件超过扫描上限".into());
-        }
-        for path in files
-            .into_iter()
-            .filter(|p| !source::ignored_path(&relative(&root, p)))
-        {
-            let text = project.read_file(&path)?;
-            if let Err(error) = settings.config(&path, &text) {
-                config_notices.push(error);
-            }
-        }
     }
     let mut export =
         openapi::generate_with_project(&classes, &scope, &config.title, &settings.finish());
@@ -273,16 +312,38 @@ fn write_export(
         export.notices.len()
     ))
 }
+fn is_unresolved_type_warning(msg: &str) -> bool {
+    msg.starts_with("无法解析类型 ") || msg.starts_with("无法解析父类型 ")
+}
+
 fn confirm_upload(ctx: &Invocation, export: &Export) -> Result<Option<String>, Error> {
-    if !export.warnings.is_empty() {
-        return Err(format!("存在 {} 条未解决的解析提示，已阻止上传。请在侧栏预览并修正，或导出 OpenAPI 手动检查。首条：{}",export.warnings.len(),export.warnings[0]).into());
+    let (unresolved, blocking): (Vec<&String>, Vec<&String>) = export
+        .warnings
+        .iter()
+        .partition(|w| is_unresolved_type_warning(w));
+    if !blocking.is_empty() {
+        return Err(format!(
+            "存在 {} 条未解决的解析提示，已阻止上传。请在侧栏预览并修正，或导出 OpenAPI 手动检查。首条：{}",
+            blocking.len(),
+            blocking[0]
+        )
+        .into());
     }
     let config = load_config(ctx)?;
     config.validate()?;
+    let unresolved_note = if unresolved.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " 注意：包含 {} 条未解析的外部/依赖类型（无本地源码，将按开放对象结构上传，首条：{}），若 Apifox 服务端已有手工字段且开启覆盖策略可能被覆盖。",
+            unresolved.len(),
+            unresolved[0]
+        )
+    };
     if !host::confirm(
         "同步到 Apifox",
         &format!(
-            "目标服务器：{}。将 {} 个接口及其数据模型同步到项目 {}，目标接口目录 {}，覆盖策略 {}。有 {} 条结构提示，请核对预览；源码未确定的动态字段或泛型保持开放结构。是否继续？",
+            "目标服务器：{}。将 {} 个接口及其数据模型同步到项目 {}，目标接口目录 {}，覆盖策略 {}。有 {} 条结构提示，请核对预览；源码未确定的动态字段或泛型保持开放结构。{}是否继续？",
             config.server()?,
             export.endpoints.len(),
             config.project_id,
@@ -291,7 +352,8 @@ fn confirm_upload(ctx: &Invocation, export: &Export) -> Result<Option<String>, E
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| "根目录".into()),
             config.overwrite,
-            export.notices.len()
+            export.notices.len(),
+            unresolved_note
         ),
     )? {
         return Ok(None);
@@ -838,8 +900,7 @@ impl Views for ApifoxHelper {
                             && proj.exists(&snap_ep.file)?
                         {
                             let text = proj.read_file(&snap_ep.file)?;
-                            if source::issues(&text).is_empty() {
-                                let classes = source::parse(&snap_ep.file, &text);
+                            if let Ok(classes) = source::parse_checked(&snap_ep.file, &text) {
                                 let title = load_config(ctx).map(|c| c.title).unwrap_or_default();
                                 let single = openapi::generate(&classes, &Scope::default(), &title);
                                 if let Some(ep) = single
@@ -916,15 +977,9 @@ impl EndpointsProvider for ApifoxHelper {
             return Ok(Vec::new());
         };
         let root = proj.root()?;
-        let export = match scan(ctx, "project") {
-            Ok(export) => export,
-            Err(Error::Failed(msg)) if msg.starts_with("当前范围未识别到接口") => {
-                return Ok(Vec::new());
-            }
-            Err(other) => return Err(other),
-        };
-        Ok(export
-            .endpoints
+        let sources = load_project_sources(&proj, &root, false, false)?;
+        let endpoints = openapi::list_endpoints(&sources.classes, &sources.settings.finish());
+        Ok(endpoints
             .into_iter()
             .map(|ep| HostEndpoint {
                 method: Some(ep.method),
@@ -1015,7 +1070,8 @@ pub fn filter_export(mut export: Export, ids: &[String]) -> Result<Export, Error
     }
     // 只同步所选接口可达的模型，避免改变其他接口使用的模型。
     let mut needed = BTreeSet::new();
-    let mut pending = vec![paths.clone()];
+    let mut pending: Vec<&Value> = vec![&paths];
+    let schemas_map = export.document["components"]["schemas"].as_object();
     while let Some(value) = pending.pop() {
         match value {
             Value::Object(map) => {
@@ -1024,11 +1080,11 @@ pub fn filter_export(mut export: Export, ids: &[String]) -> Result<Export, Error
                     .and_then(Value::as_str)
                     .and_then(|r| r.strip_prefix("#/components/schemas/"))
                     && needed.insert(name.to_string())
-                    && let Some(schema) = export.document["components"]["schemas"].get(name)
+                    && let Some(schema) = schemas_map.and_then(|m| m.get(name))
                 {
-                    pending.push(schema.clone());
+                    pending.push(schema);
                 }
-                pending.extend(map.into_values());
+                pending.extend(map.values());
             }
             Value::Array(items) => pending.extend(items),
             _ => (),

@@ -858,3 +858,208 @@ public class TagController {
     assert_eq!(query_p["in"], "query");
     assert_eq!(query_p["description"], "搜索关键词");
 }
+
+#[test]
+fn supports_java_text_blocks_in_bodies_and_annotations_and_preserves_line_numbers() {
+    let java_code = concat!(
+        "package demo;\n",
+        "import io.swagger.v3.oas.annotations.Operation;\n",
+        "import org.springframework.web.bind.annotation.*;\n",
+        "@RestController\n",
+        "public class PolicyController {\n",
+        "    private String sample() {\n",
+        "        return switch (1) {\n",
+        "            case 1 -> \"\"\"\n",
+        "                {\n",
+        "                  \"Version\": \"2012-10-17\",\n",
+        "                  \"Escaped\": \"\\\"\\\"\\\"\",\n",
+        "                  \"Backslash\": \"\\\\\",\n",
+        "                  \"Continued\": \"hello\" \\\n",
+        "                    \"world\"\n",
+        "                }\n",
+        "                \"\"\";\n",
+        "            default -> \"\";\n",
+        "        };\n",
+        "    }\n",
+        "    @Operation(summary = \"获取策略\", description = \"\"\"\n",
+        "        第一行说明\n",
+        "        第二行说明\n",
+        "        \"\"\")\n",
+        "    @GetMapping(\"/policy\")\n",
+        "    public String policy() { return sample(); }\n",
+        "}\n",
+    );
+
+    let classes = source::parse_checked("src/main/java/demo/PolicyController.java", java_code)
+        .expect("text blocks must parse cleanly");
+    assert_eq!(classes.len(), 1);
+    let policy_method = classes[0]
+        .methods
+        .iter()
+        .find(|m| m.name == "policy")
+        .expect("policy method");
+    assert_eq!(policy_method.line, 19);
+
+    let result = export(&[("src/main/java/demo/PolicyController.java", java_code)]);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.endpoints.len(), 1);
+    assert_eq!(
+        result.endpoints[0].operation["description"],
+        "第一行说明\n第二行说明"
+    );
+}
+
+#[test]
+fn supports_kotlin_raw_strings_nested_comments_and_modern_modifiers() {
+    let kt_code = r#"
+package demo
+import org.springframework.web.bind.annotation.*
+/* outer /* nested } */ still comment { */
+@JvmInline
+value class UserId(val value: Long)
+data object Constants {
+    const val BASE = "/kt"
+}
+fun interface Mapper {
+    fun map(v: String): String
+}
+@RestController
+@RequestMapping(Constants.BASE)
+class ModernController {
+    inner class Helper {
+        val raw = """C:\path\to\dir\"""
+        val trailingQuotes = """hello""""
+    }
+    @GetMapping("/user")
+    fun user(): UserId? = null
+}
+"#;
+    let kt_classes = source::parse_checked("src/main/kotlin/demo/Modern.kt", kt_code)
+        .expect("kotlin raw strings and nested comments must parse cleanly");
+    assert!(kt_classes.iter().any(|c| c.name == "UserId"));
+    assert!(kt_classes.iter().any(|c| c.name == "Constants"));
+    assert!(kt_classes.iter().any(|c| c.name == "Mapper"));
+
+    let java_modifiers = r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+public sealed interface Shape permits Circle {}
+public non-sealed class Circle implements Shape {
+    public String name;
+}
+public record Point(int x, int y) {}
+@RestController
+public class ShapeController {
+    @GetMapping("/circle")
+    public Circle circle() { return null; }
+    @GetMapping("/point")
+    public Point point() { return null; }
+}
+"#;
+    let result = export(&[
+        ("src/main/kotlin/demo/Modern.kt", kt_code),
+        ("src/main/java/demo/Shapes.java", java_modifiers),
+    ]);
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    let paths = result.document["paths"].as_object().unwrap();
+    assert!(paths.contains_key("/kt/user"));
+    assert!(paths.contains_key("/circle"));
+    assert!(paths.contains_key("/point"));
+    let schemas = result.document["components"]["schemas"]
+        .as_object()
+        .unwrap();
+    assert_eq!(schemas["Circle"]["properties"]["name"]["type"], "string");
+    assert_eq!(schemas["Point"]["properties"]["x"]["format"], "int32");
+}
+
+#[test]
+fn handles_injected_session_catch_all_routes_resource_json_and_pair_without_shadowing_local() {
+    let result = export(&[
+        (
+            "src/main/java/demo/ApiController.java",
+            r#"
+package demo;
+import cn.hutool.core.lang.Dict;
+import cn.hutool.json.JSONArray;
+import com.alibaba.fastjson2.JSONObject;
+import com.fasterxml.jackson.databind.JsonNode;
+import jakarta.servlet.http.HttpSession;
+import org.springframework.core.io.Resource;
+import org.springframework.data.util.Pair;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
+
+@RestController
+@RequestMapping("/files")
+public class ApiController {
+    @GetMapping("/view/{*filename}")
+    public ResponseEntity<Resource> download(
+        @PathVariable String filename,
+        HttpSession session,
+        ServerWebExchange exchange
+    ) { return null; }
+
+    @PostMapping("/payload")
+    public Pair<String, Integer> payload(
+        @RequestBody PayloadDto body
+    ) { return null; }
+}
+class PayloadDto {
+    public JSONObject obj;
+    public JSONArray arr;
+    public Dict dict;
+    public JsonNode node;
+}
+"#,
+        ),
+        (
+            "src/main/java/local/LocalController.java",
+            r#"
+package local;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class LocalController {
+    @GetMapping("/local-resource")
+    public Resource local() { return null; }
+}
+class Resource {
+    public String customField;
+}
+"#,
+        ),
+    ]);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert!(!result.notices.is_empty());
+
+    let download = &result.document["paths"]["/files/view/{filename}"]["get"];
+    assert!(download.is_object(), "catch-all path should normalize");
+    let params = download["parameters"].as_array().unwrap();
+    assert_eq!(params.len(), 1);
+    assert_eq!(params[0]["name"], "filename");
+    assert_eq!(
+        download["responses"]["200"]["content"]["application/json"]["schema"]["format"],
+        "binary"
+    );
+
+    let payload_res = &result.document["paths"]["/files/payload"]["post"]["responses"]["200"]["content"]
+        ["application/json"]["schema"];
+    assert_eq!(payload_res["properties"]["first"]["type"], "string");
+    assert_eq!(payload_res["properties"]["second"]["format"], "int32");
+
+    let schemas = result.document["components"]["schemas"]
+        .as_object()
+        .unwrap();
+    let payload_dto = &schemas["PayloadDto"]["properties"];
+    assert_eq!(payload_dto["obj"]["type"], "object");
+    assert_eq!(payload_dto["obj"]["additionalProperties"], json!({}));
+    assert_eq!(payload_dto["arr"]["type"], "array");
+    assert_eq!(payload_dto["dict"]["type"], "object");
+    assert_eq!(payload_dto["node"], json!({}));
+
+    assert_eq!(
+        schemas["Resource"]["properties"]["customField"]["type"],
+        "string"
+    );
+}

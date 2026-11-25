@@ -1,11 +1,11 @@
 //! 将源码契约转换为 OpenAPI，上传前保留解析告警，避免静默覆盖不完整模型。
 use crate::{
-    schema::{Schemas, Type, decorate, typed_value},
+    schema::{ClassIndex, Schemas, Type, decorate, typed_value},
     source::{self, Class, Method, annotation, has},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Endpoint {
@@ -43,20 +43,37 @@ pub struct Export {
     #[serde(default)]
     pub notices: Vec<String>,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EndpointLocation {
+    pub method: String,
+    pub path: String,
+    pub handler: String,
+    pub file: String,
+    pub declaration_file: Option<String>,
+    pub line: u32,
+}
 #[derive(Default)]
 pub struct Scope {
     pub paths: Vec<String>,
     pub method_line: Option<(String, u32)>,
 }
+fn path_matches(target: &str, scope_path: &str) -> bool {
+    let prefix = scope_path.trim_end_matches('/');
+    target == scope_path
+        || (target.starts_with(prefix) && target.as_bytes().get(prefix.len()) == Some(&b'/'))
+}
 impl Scope {
+    fn accepts_class(&self, c: &Class) -> bool {
+        if let Some((path, _)) = &self.method_line {
+            return &c.path == path;
+        }
+        self.paths.is_empty() || self.paths.iter().any(|p| path_matches(&c.path, p))
+    }
     fn accepts(&self, c: &Class, m: &Method) -> bool {
         if let Some((path, line)) = &self.method_line {
             return &c.path == path && m.line <= *line && m.end_line >= *line;
         }
-        self.paths.is_empty()
-            || self.paths.iter().any(|p| {
-                c.path == *p || c.path.starts_with(&format!("{}/", p.trim_end_matches('/')))
-            })
+        self.paths.is_empty() || self.paths.iter().any(|p| path_matches(&c.path, p))
     }
 }
 
@@ -216,8 +233,17 @@ fn operation(
                 ty.simple(),
                 "HttpServletRequest"
                     | "HttpServletResponse"
+                    | "HttpSession"
                     | "ServletRequest"
                     | "ServletResponse"
+                    | "NativeWebRequest"
+                    | "ServerWebExchange"
+                    | "ServerHttpRequest"
+                    | "ServerHttpResponse"
+                    | "RedirectAttributes"
+                    | "SessionStatus"
+                    | "UriComponentsBuilder"
+                    | "ServletUriComponentsBuilder"
                     | "Principal"
                     | "Authentication"
                     | "BindingResult"
@@ -426,7 +452,7 @@ fn operation(
 /// Spring 正则可以包含量词、字符类和转义括号；只有变量最外层的括号进入 OpenAPI。
 fn normalize_route(path: &str) -> Result<String, String> {
     let mut cleaned = String::new();
-    let (mut variable, mut regex, mut escaped) = (false, false, false);
+    let (mut variable, mut regex, mut escaped, mut catch_all) = (false, false, false, false);
     let (mut braces, mut classes, mut name_len) = (0usize, 0usize, 0usize);
     for ch in path.chars() {
         if regex {
@@ -450,6 +476,8 @@ fn normalize_route(path: &str) -> Result<String, String> {
             }
         } else if variable {
             match ch {
+                '*' if name_len == 0 && !catch_all => catch_all = true,
+                '*' if name_len == 0 => return Err("变量名为空或包含嵌套括号".into()),
                 ':' if name_len > 0 => regex = true,
                 '}' if name_len > 0 => {
                     variable = false;
@@ -465,6 +493,7 @@ fn normalize_route(path: &str) -> Result<String, String> {
             match ch {
                 '{' => {
                     variable = true;
+                    catch_all = false;
                     name_len = 0;
                     cleaned.push(ch);
                 }
@@ -479,65 +508,10 @@ fn normalize_route(path: &str) -> Result<String, String> {
     Ok(cleaned)
 }
 
-fn resolve_class_quiet<'a>(name: &str, ctx: &Class, classes: &'a [Class]) -> Option<&'a Class> {
-    if name.contains('.')
-        && let Some(c) = classes.iter().find(|c| c.qualified() == name)
-    {
-        return Some(c);
-    }
-    let mut enclosing = ctx.name.as_str();
-    loop {
-        let candidate = format!("{}.{}.{name}", ctx.package, enclosing)
-            .trim_start_matches('.')
-            .to_string();
-        if let Some(c) = classes.iter().find(|c| c.qualified() == candidate) {
-            return Some(c);
-        }
-        match enclosing.rsplit_once('.') {
-            Some((parent, _)) => enclosing = parent,
-            None => break,
-        }
-    }
-    let explicit: BTreeSet<_> = ctx
-        .imports
-        .iter()
-        .filter(|i| !i.ends_with(".*") && i.rsplit('.').next() == Some(name))
-        .cloned()
-        .collect();
-    if explicit.len() == 1 {
-        let wanted = explicit.first()?;
-        return classes.iter().find(|c| c.qualified() == *wanted);
-    }
-    if !explicit.is_empty() {
-        return None;
-    }
-    if let Some(c) = classes
-        .iter()
-        .find(|c| c.qualified() == format!("{}.{name}", ctx.package).trim_start_matches('.'))
-    {
-        return Some(c);
-    }
-    let wildcard: Vec<_> = ctx
-        .imports
-        .iter()
-        .filter_map(|i| i.strip_suffix(".*"))
-        .map(|p| format!("{p}.{name}"))
-        .filter_map(|wanted| classes.iter().find(|c| c.qualified() == wanted))
-        .collect();
-    if wildcard.len() == 1 {
-        return Some(wildcard[0]);
-    }
-    if !wildcard.is_empty() {
-        return None;
-    }
-    let candidates: Vec<_> = classes.iter().filter(|c| c.name == name).collect();
-    (candidates.len() == 1).then(|| candidates[0])
-}
-
 fn find_constant_in_hierarchy<'a>(
     name: &str,
     ctx: &'a Class,
-    classes: &'a [Class],
+    index: &ClassIndex<'a>,
     seen: &mut BTreeSet<String>,
 ) -> Option<(&'a Class, &'a str)> {
     if !seen.insert(ctx.qualified()) {
@@ -553,8 +527,8 @@ fn find_constant_in_hierarchy<'a>(
         } else {
             format!("{}.{parent_name}", ctx.package)
         };
-        if let Some(parent) = classes.iter().find(|c| c.qualified() == candidate)
-            && let Some(found) = find_constant_in_hierarchy(name, parent, classes, seen)
+        if let Some(parent) = index.get_qualified(&candidate)
+            && let Some(found) = find_constant_in_hierarchy(name, parent, index, seen)
         {
             return Some(found);
         }
@@ -562,8 +536,8 @@ fn find_constant_in_hierarchy<'a>(
     }
     for base in ctx.bases.iter().chain(ctx.interfaces.iter()) {
         let ty = Type::parse(base);
-        if let Some(parent) = resolve_class_quiet(&ty.name, ctx, classes)
-            && let Some(found) = find_constant_in_hierarchy(name, parent, classes, seen)
+        if let Some(parent) = index.resolve_quiet(&ty.name, ctx)
+            && let Some(found) = find_constant_in_hierarchy(name, parent, index, seen)
         {
             return Some(found);
         }
@@ -574,17 +548,16 @@ fn find_constant_in_hierarchy<'a>(
 fn find_constant<'a>(
     ident: &str,
     ctx: &'a Class,
-    classes: &'a [Class],
+    index: &ClassIndex<'a>,
     ambiguity: &mut Option<String>,
 ) -> Option<(&'a Class, String, &'a str)> {
     if let Some((holder, const_name)) = ident.rsplit_once('.') {
-        let holder_class = resolve_class_quiet(holder, ctx, classes)?;
+        let holder_class = index.resolve_quiet(holder, ctx)?;
         let (owner, val) =
-            find_constant_in_hierarchy(const_name, holder_class, classes, &mut BTreeSet::new())?;
+            find_constant_in_hierarchy(const_name, holder_class, index, &mut BTreeSet::new())?;
         return Some((owner, const_name.to_string(), val));
     }
-    if let Some((owner, val)) =
-        find_constant_in_hierarchy(ident, ctx, classes, &mut BTreeSet::new())
+    if let Some((owner, val)) = find_constant_in_hierarchy(ident, ctx, index, &mut BTreeSet::new())
     {
         return Some((owner, ident.to_string(), val));
     }
@@ -598,11 +571,9 @@ fn find_constant<'a>(
             .filter_map(|imp| imp.strip_suffix(&suffix))
         {
             explicit |= suffix != ".*";
-            if let Some(holder) = classes
-                .iter()
-                .find(|class| class.qualified() == holder_name)
+            if let Some(holder) = index.get_qualified(holder_name)
                 && let Some((owner, value)) =
-                    find_constant_in_hierarchy(ident, holder, classes, &mut BTreeSet::new())
+                    find_constant_in_hierarchy(ident, holder, index, &mut BTreeSet::new())
             {
                 candidates.insert(owner.qualified(), (owner, ident.to_string(), value));
             }
@@ -652,7 +623,7 @@ fn split_plus_outside_quotes(s: &str) -> Vec<&str> {
 fn resolve_route_expr(
     expr: &str,
     ctx: &Class,
-    classes: &[Class],
+    index: &ClassIndex,
     visited: &mut BTreeSet<(String, String)>,
     depth: usize,
     ambiguity: &mut Option<String>,
@@ -677,13 +648,12 @@ fn resolve_route_expr(
             && !part.starts_with('.')
             && !part.ends_with('.')
         {
-            let (owner, name, raw_val) = find_constant(part, ctx, classes, ambiguity)?;
+            let (owner, name, raw_val) = find_constant(part, ctx, index, ambiguity)?;
             let key = (owner.qualified(), name);
             if !visited.insert(key.clone()) {
                 return None;
             }
-            let resolved =
-                resolve_route_expr(raw_val, owner, classes, visited, depth + 1, ambiguity);
+            let resolved = resolve_route_expr(raw_val, owner, index, visited, depth + 1, ambiguity);
             visited.remove(&key);
             out.push_str(&resolved?);
         } else {
@@ -696,7 +666,7 @@ fn resolve_route_expr(
 fn resolve_route_candidate(
     raw: &str,
     contexts: &[&Class],
-    classes: &[Class],
+    index: &ClassIndex,
     controller_path: &str,
 ) -> Result<String, String> {
     let Some(expr) = raw.strip_prefix("!constant:") else {
@@ -705,7 +675,7 @@ fn resolve_route_candidate(
     for ctx in contexts {
         let mut ambiguity = None;
         if let Some(resolved) =
-            resolve_route_expr(expr, ctx, classes, &mut BTreeSet::new(), 0, &mut ambiguity)
+            resolve_route_expr(expr, ctx, index, &mut BTreeSet::new(), 0, &mut ambiguity)
         {
             return Ok(resolved);
         }
@@ -725,20 +695,21 @@ struct EffectiveMethod<'a> {
 fn bound_type(
     ty: &Type,
     ctx: &Class,
-    classes: &[Class],
+    index: &ClassIndex,
     bindings: &BTreeMap<String, Type>,
 ) -> Type {
     if bindings.contains_key(&ty.name) {
         return ty.substitute(bindings);
     }
     Type {
-        name: resolve_class_quiet(&ty.name, ctx, classes)
+        name: index
+            .resolve_quiet(&ty.name, ctx)
             .map(|c| c.qualified())
             .unwrap_or_else(|| Schemas::external_name(&ty.name, ctx)),
         args: ty
             .args
             .iter()
-            .map(|arg| bound_type(arg, ctx, classes, bindings))
+            .map(|arg| bound_type(arg, ctx, index, bindings))
             .collect(),
         ..ty.clone()
     }
@@ -747,21 +718,21 @@ fn bound_type(
 fn method_key(
     m: &Method,
     owner: &Class,
-    classes: &[Class],
+    index: &ClassIndex,
     bindings: &BTreeMap<String, Type>,
 ) -> (String, Vec<String>) {
     (
         m.name.clone(),
         m.params
             .iter()
-            .map(|p| bound_type(&Type::parse(&p.ty), owner, classes, bindings).signature())
+            .map(|p| bound_type(&Type::parse(&p.ty), owner, index, bindings).signature())
             .collect(),
     )
 }
 
 fn collect_ancestors<'a>(
     c: &'a Class,
-    classes: &'a [Class],
+    index: &ClassIndex<'a>,
 ) -> Vec<(&'a Class, BTreeMap<String, Type>)> {
     let mut ancestors = Vec::new();
     let mut seen = BTreeSet::new();
@@ -770,8 +741,8 @@ fn collect_ancestors<'a>(
     queue.push_back((c, BTreeMap::new()));
     while let Some((curr, bindings)) = queue.pop_front() {
         for base in curr.bases.iter().chain(curr.interfaces.iter()) {
-            let ty = bound_type(&Type::parse(base), curr, classes, &bindings);
-            if let Some(parent) = resolve_class_quiet(&ty.name, curr, classes)
+            let ty = bound_type(&Type::parse(base), curr, index, &bindings);
+            if let Some(parent) = index.resolve_quiet(&ty.name, curr)
                 && seen.insert(parent.qualified())
             {
                 let next_bindings: BTreeMap<String, Type> =
@@ -804,9 +775,9 @@ fn merge_param(param: &mut source::Field, parent_param: &source::Field) {
 
 fn effective_controller<'a>(
     c: &'a Class,
-    classes: &'a [Class],
+    index: &ClassIndex<'a>,
 ) -> (Class, Vec<String>, Vec<&'a Class>, Vec<EffectiveMethod<'a>>) {
-    let ancestors = collect_ancestors(c, classes);
+    let ancestors = collect_ancestors(c, index);
     let mut effective_class = c.clone();
     let has_own_tag = has(&c.annotations, "Tag") || has(&c.annotations, "Api");
     for (parent, _) in &ancestors {
@@ -844,12 +815,12 @@ fn effective_controller<'a>(
         }
         let mut merged = m.clone();
         let mut owner = c;
-        let key = method_key(m, c, classes, &BTreeMap::new());
+        let key = method_key(m, c, index, &BTreeMap::new());
         if let Some((parent, pm)) = ancestors.iter().find_map(|(parent, bindings)| {
             parent
                 .methods
                 .iter()
-                .find(|pm| pm.name == m.name && method_key(pm, parent, classes, bindings) == key)
+                .find(|pm| pm.name == m.name && method_key(pm, parent, index, bindings) == key)
                 .map(|pm| (*parent, pm))
         }) {
             owner = parent;
@@ -872,7 +843,7 @@ fn effective_controller<'a>(
         for pm in &parent.methods {
             if (mappings(&pm.annotations).is_none()
                 && annotation(&pm.annotations, "Path").is_none())
-                || !signatures.insert(method_key(pm, parent, classes, bindings))
+                || !signatures.insert(method_key(pm, parent, index, bindings))
             {
                 continue;
             }
@@ -891,37 +862,143 @@ fn effective_controller<'a>(
     (effective_class, base_paths, base_contexts, methods)
 }
 
-fn collect_reachable_schemas(
-    value: &Value,
-    components: &BTreeMap<String, Value>,
-    seed: &BTreeSet<String>,
-) -> BTreeSet<String> {
-    let mut needed = seed.clone();
-    let mut pending = vec![value.clone()];
-    for name in seed {
-        if let Some(schema) = components.get(name) {
-            pending.push(schema.clone());
-        }
-    }
-    while let Some(v) = pending.pop() {
+fn collect_direct_refs<'v>(root: &'v Value, out: &mut Vec<&'v str>) {
+    let mut stack = vec![root];
+    while let Some(v) = stack.pop() {
         match v {
             Value::Object(map) => {
                 if let Some(name) = map
                     .get("$ref")
                     .and_then(Value::as_str)
                     .and_then(|r| r.strip_prefix("#/components/schemas/"))
-                    && needed.insert(name.to_string())
-                    && let Some(schema) = components.get(name)
                 {
-                    pending.push(schema.clone());
+                    out.push(name);
                 }
-                pending.extend(map.into_values());
+                stack.extend(map.values());
             }
-            Value::Array(items) => pending.extend(items),
+            Value::Array(items) => stack.extend(items),
             _ => (),
         }
     }
-    needed
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_endpoint_route(
+    raw_base: &str,
+    raw_path: &str,
+    verb: &str,
+    base_contexts: &[&Class],
+    method_contexts: &[&Class],
+    index: &ClassIndex,
+    project: &crate::project::ProjectContext,
+    controller_path: &str,
+) -> Result<(String, String, Option<String>), String> {
+    let base = resolve_route_candidate(raw_base, base_contexts, index, controller_path)?;
+    let path = resolve_route_candidate(raw_path, method_contexts, index, controller_path)?;
+    let placeholders = base.contains("${") || path.contains("${");
+    let (base, route) = project
+        .route(&base)
+        .and_then(|base| project.route(&path).map(|path| (base, path)))
+        .map_err(|error| format!("未解析路由 {base}{path}（{controller_path}）：{error}"))?;
+    let placeholder_notice = placeholders.then(|| {
+        format!("路由占位符按项目基础配置解析（{controller_path}）；运行时 profile 和环境变量覆盖值需核对")
+    });
+    let path = join_path(&base, &route);
+    if ![
+        "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE",
+    ]
+    .contains(&verb)
+    {
+        return Err(format!("未解析 HTTP 方法 {verb}（{controller_path}）"));
+    }
+    if path.contains('$') || !path.starts_with('/') {
+        return Err(format!("未解析路由 {path}（{controller_path}）"));
+    }
+    let cleaned = normalize_route(&path)
+        .map_err(|error| format!("无法规范化路由 {path}（{controller_path}）：{error}"))?;
+    Ok((path, cleaned, placeholder_notice))
+}
+
+/// 仅提取接口路由与源码位置，供宿主 EndpointsProvider 使用，不构建 OpenAPI 与模型。
+pub fn list_endpoints(
+    classes: &[Class],
+    project: &crate::project::ProjectContext,
+) -> Vec<EndpointLocation> {
+    let index = ClassIndex::new(classes);
+    let mut out = Vec::new();
+    let mut operation_ids = HashSet::new();
+    let mut seen_routes = HashSet::new();
+    for c in classes {
+        if !["RestController", "Controller", "FeignClient", "Path"]
+            .iter()
+            .any(|a| has(&c.annotations, a))
+        {
+            continue;
+        }
+        let (_, base_paths, base_contexts, effective_methods) = effective_controller(c, &index);
+        for em in &effective_methods {
+            let m = &em.method;
+            if has(&m.annotations, "Hidden")
+                || annotation(&m.annotations, "Operation")
+                    .and_then(|a| a.value("hidden"))
+                    .as_deref()
+                    == Some("true")
+            {
+                continue;
+            }
+            let Some((verbs, mut method_paths)) = mappings(&m.annotations) else {
+                continue;
+            };
+            if let Some(p) = annotation(&m.annotations, "Path") {
+                method_paths = route_values(p);
+            }
+            let method_contexts: Vec<&Class> = if std::ptr::eq(em.owner, c) {
+                vec![c]
+            } else {
+                vec![c, em.owner]
+            };
+            let declaration = if em.is_inherited { em.owner } else { c };
+            for raw_base in &base_paths {
+                for raw_path in &method_paths {
+                    for verb in &verbs {
+                        let Ok((path, cleaned, _)) = resolve_endpoint_route(
+                            raw_base,
+                            raw_path,
+                            verb,
+                            &base_contexts,
+                            &method_contexts,
+                            &index,
+                            project,
+                            &c.path,
+                        ) else {
+                            continue;
+                        };
+                        let id = crate::schema::component_key(&format!(
+                            "{}_{}_{}_{}",
+                            c.qualified(),
+                            m.name,
+                            verb,
+                            path
+                        ));
+                        if !operation_ids.insert(id)
+                            || !seen_routes.insert((cleaned.clone(), verb.to_lowercase()))
+                        {
+                            continue;
+                        }
+                        out.push(EndpointLocation {
+                            method: verb.clone(),
+                            path: cleaned,
+                            handler: format!("{}.{}", c.name, m.name),
+                            file: c.path.clone(),
+                            declaration_file: em.is_inherited.then(|| declaration.path.clone()),
+                            line: m.line,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn generate(classes: &[Class], scope: &Scope, title: &str) -> Export {
@@ -945,14 +1022,15 @@ pub fn generate_with_project(
     let mut operation_ids = BTreeSet::new();
     for c in classes {
         // 仅声明方法映射不会注册 Spring 控制器；注释掉的类不能制造重复路由。
-        if !["RestController", "Controller", "FeignClient", "Path"]
-            .iter()
-            .any(|a| has(&c.annotations, a))
+        if !scope.accepts_class(c)
+            || !["RestController", "Controller", "FeignClient", "Path"]
+                .iter()
+                .any(|a| has(&c.annotations, a))
         {
             continue;
         }
         let (effective_class, base_paths, base_contexts, effective_methods) =
-            effective_controller(c, classes);
+            effective_controller(c, &schemas.index);
         for em in &effective_methods {
             let m = &em.method;
             if (em.is_inherited && scope.method_line.is_some())
@@ -979,22 +1057,14 @@ pub fn generate_with_project(
             for raw_base in &base_paths {
                 for raw_path in &method_paths {
                     for verb in &verbs {
-                        let base = match resolve_route_candidate(
+                        let (path, cleaned, placeholder_notice) = match resolve_endpoint_route(
                             raw_base,
-                            &base_contexts,
-                            classes,
-                            &c.path,
-                        ) {
-                            Ok(v) => v,
-                            Err(msg) => {
-                                schemas.warnings.insert(msg);
-                                continue;
-                            }
-                        };
-                        let path = match resolve_route_candidate(
                             raw_path,
+                            verb,
+                            &base_contexts,
                             &method_contexts,
-                            classes,
+                            &schemas.index,
+                            project,
                             &c.path,
                         ) {
                             Ok(v) => v,
@@ -1003,57 +1073,9 @@ pub fn generate_with_project(
                                 continue;
                             }
                         };
-                        let placeholders = base.contains("${") || path.contains("${");
-                        let resolved = project
-                            .route(&base)
-                            .and_then(|base| project.route(&path).map(|path| (base, path)));
-                        let (base, route) = match resolved {
-                            Ok(value) => value,
-                            Err(error) => {
-                                schemas.warnings.insert(format!(
-                                    "未解析路由 {base}{path}（{}）：{error}",
-                                    c.path
-                                ));
-                                continue;
-                            }
-                        };
-                        let placeholder_notice = if placeholders {
-                            let msg = format!(
-                                "路由占位符按项目基础配置解析（{}）；运行时 profile 和环境变量覆盖值需核对",
-                                c.path
-                            );
+                        if let Some(msg) = &placeholder_notice {
                             schemas.notices.insert(msg.clone());
-                            Some(msg)
-                        } else {
-                            None
-                        };
-                        let path = join_path(&base, &route);
-                        if ![
-                            "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE",
-                        ]
-                        .contains(&verb.as_str())
-                        {
-                            schemas
-                                .warnings
-                                .insert(format!("未解析 HTTP 方法 {verb}（{}）", c.path));
-                            continue;
                         }
-                        if path.contains('$') || !path.starts_with('/') {
-                            schemas
-                                .warnings
-                                .insert(format!("未解析路由 {path}（{}）", c.path));
-                            continue;
-                        }
-                        let cleaned = match normalize_route(&path) {
-                            Ok(path) => path,
-                            Err(error) => {
-                                schemas.warnings.insert(format!(
-                                    "无法规范化路由 {path}（{}）：{error}",
-                                    c.path
-                                ));
-                                continue;
-                            }
-                        };
                         let declaration = if em.is_inherited { em.owner } else { c };
                         let mut op =
                             operation(&effective_class, declaration, m, &mut schemas, &cleaned);
@@ -1157,6 +1179,19 @@ pub fn generate_with_project(
         mapped_notices.entry(final_name).or_default().extend(msgs);
     }
     let mut warnings: Vec<_> = schemas.warnings.into_iter().collect();
+    let has_component_diagnostics = !mapped_warnings.is_empty() || !mapped_notices.is_empty();
+    let schema_refs: HashMap<&str, Vec<&str>> = if has_component_diagnostics {
+        components
+            .iter()
+            .map(|(name, schema)| {
+                let mut refs = Vec::new();
+                collect_direct_refs(schema, &mut refs);
+                (name.as_str(), refs)
+            })
+            .collect()
+    } else {
+        HashMap::new()
+    };
     for (ep, (mut ep_w, mut ep_n, touched)) in endpoints.iter_mut().zip(endpoint_meta) {
         for p in ep.operation["parameters"].as_array().into_iter().flatten() {
             if p["in"] == "path"
@@ -1169,16 +1204,41 @@ pub fn generate_with_project(
                 ep_w.insert(msg);
             }
         }
-        let seed: BTreeSet<String> = touched
-            .into_iter()
-            .map(|k| names.get(&k).cloned().unwrap_or(k))
-            .collect();
-        for sname in collect_reachable_schemas(&ep.operation, &components, &seed) {
-            if let Some(msgs) = mapped_warnings.get(&sname) {
-                ep_w.extend(msgs.iter().cloned());
+        if has_component_diagnostics {
+            let seed: Vec<String> = touched
+                .into_iter()
+                .map(|k| names.get(&k).cloned().unwrap_or(k))
+                .collect();
+            let mut visited: HashSet<&str> = HashSet::new();
+            let mut queue: Vec<&str> = Vec::new();
+            for s in &seed {
+                if visited.insert(s.as_str()) {
+                    queue.push(s.as_str());
+                }
             }
-            if let Some(msgs) = mapped_notices.get(&sname) {
-                ep_n.extend(msgs.iter().cloned());
+            let mut op_refs = Vec::new();
+            collect_direct_refs(&ep.operation, &mut op_refs);
+            for r in op_refs {
+                if visited.insert(r) {
+                    queue.push(r);
+                }
+            }
+            while let Some(curr) = queue.pop() {
+                if let Some(nexts) = schema_refs.get(curr) {
+                    for &next in nexts {
+                        if visited.insert(next) {
+                            queue.push(next);
+                        }
+                    }
+                }
+            }
+            for sname in visited {
+                if let Some(msgs) = mapped_warnings.get(sname) {
+                    ep_w.extend(msgs.iter().cloned());
+                }
+                if let Some(msgs) = mapped_notices.get(sname) {
+                    ep_n.extend(msgs.iter().cloned());
+                }
             }
         }
         ep.warnings = ep_w.into_iter().collect();

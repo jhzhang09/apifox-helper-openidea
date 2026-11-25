@@ -960,3 +960,122 @@ fn open_panel_and_debug_commands_sync_cursor_endpoint_focus() {
         panic!("expected HTML view");
     }
 }
+
+#[test]
+fn endpoints_provider_resolves_routes_and_tolerates_unclosed_unrelated_files() {
+    use openidea_plugin::endpoints::EndpointsProvider;
+
+    let h = MockHost::install();
+    h.add_file(
+        "src/Routes.java",
+        "package demo; public class Routes { public static final String PREFIX = \"/v1\"; }",
+    );
+    h.add_file(
+        "src/Base.java",
+        "package demo; class Base { @GetMapping(\"/inherited\") public String inherited() { return \"\"; } }",
+    );
+    h.add_file(
+        "src/ApiController.java",
+        "package demo;\nimport static demo.Routes.PREFIX;\n@RestController\n@RequestMapping(PREFIX)\npublic class ApiController extends Base {\n    @GetMapping(\"${api.path:/items}\")\n    public String items() { return \"\"; }\n    @Hidden\n    @GetMapping(\"/secret\")\n    public String secret() { return \"\"; }\n    @GetMapping(\"${api.path:/items}\")\n    public String dup() { return \"\"; }\n}\n",
+    );
+    h.add_file("src/Draft.java", "package demo; class Draft { void f(");
+    h.add_file(
+        "src/main/resources/application.yml",
+        "api:\n  path: /items\n",
+    );
+
+    let mut plugin = ApifoxHelper;
+    let eps = plugin.endpoints(&h.invocation()).unwrap();
+    let paths: Vec<_> = eps.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["/v1/items", "/v1/inherited"]);
+    assert_eq!(eps[0].location.path, "/project/src/ApiController.java");
+    assert_eq!(eps[1].location.path, "/project/src/Base.java");
+
+    // Full scan() must still reject the unclosed syntax file.
+    assert!(scan(&h.invocation(), "project").is_err());
+}
+
+#[test]
+fn schema_index_preserves_wildcard_generic_and_builtin_resolution() {
+    let h = MockHost::install();
+    h.add_file(
+        "common/R.java",
+        "package common; public class R<T> { public int code; public String msg; public T data; }",
+    );
+    h.add_file(
+        "dto/UserDto.java",
+        "package dto; public class UserDto { public Long id; public String name; }",
+    );
+    h.add_file(
+        "api/UserController.java",
+        "package api;\nimport common.*;\nimport dto.*;\n@RestController\npublic class UserController {\n    @GetMapping(\"/user\")\n    public R<UserDto> get() { return null; }\n}\n",
+    );
+    let export = scan(&h.invocation(), "project").unwrap();
+    assert!(export.warnings.is_empty(), "{:?}", export.warnings);
+    let schemas = export.document["components"]["schemas"]
+        .as_object()
+        .unwrap();
+    assert!(schemas.contains_key("RUserDto"));
+    assert!(schemas.contains_key("UserDto"));
+    assert_eq!(
+        schemas["RUserDto"]["properties"]["data"]["allOf"][0]["$ref"],
+        "#/components/schemas/UserDto"
+    );
+    assert_eq!(schemas["UserDto"]["properties"]["id"]["format"], "int64");
+}
+
+#[test]
+fn upload_allows_confirmed_sync_for_unresolved_external_types_but_blocks_real_errors() {
+    let h = MockHost::install().with_capabilities(&[
+        "project.read",
+        "storage",
+        "editor.read",
+        "secrets",
+        "net:api.apifox.com",
+    ]);
+    h.add_file(
+        "src/ThirdPartyController.java",
+        "package demo;\nimport ext.ThirdPartyDto;\n@RestController\npublic class ThirdPartyController {\n    @GetMapping(\"/ext\")\n    public ThirdPartyDto ext() { return null; }\n}\n",
+    );
+    h.select_paths(&["src/ThirdPartyController.java"]);
+    h.set_secret("apifox_token", "mock");
+    host::storage::set("config:/project", r#"{"project_id":"123"}"#).unwrap();
+    h.on_fetch(|_| {
+        Ok(openidea_plugin::HttpResponse {
+            status: 200,
+            body: br#"{"data":{"counters":{"endpointCreated":1,"endpointUpdated":0,"schemaCreated":0}}}"#.to_vec(),
+            ..Default::default()
+        })
+    });
+
+    // Cancelled confirmation should not upload
+    assert!(
+        ApifoxHelper
+            .run_command("upload", &h.invocation(), None)
+            .unwrap()
+            .is_none()
+    );
+    assert!(h.requests().is_empty());
+
+    // Confirmed upload succeeds even with unresolved external type warning
+    h.answer_next_prompt(Some(&["yes"]));
+    let msg = ApifoxHelper
+        .run_command("upload", &h.invocation(), None)
+        .unwrap()
+        .unwrap();
+    assert!(msg.contains("新增 1"), "{msg}");
+    assert_eq!(h.requests().len(), 1);
+
+    // Genuine blocking error (duplicate route) must still be hard-blocked
+    h.add_file(
+        "src/DupController.java",
+        "package demo;\n@RestController\npublic class DupController {\n    @GetMapping(\"/dup\") public String a() { return \"\"; }\n    @GetMapping(\"/dup\") public String b() { return \"\"; }\n}\n",
+    );
+    h.select_paths(&["src/DupController.java"]);
+    h.answer_next_prompt(Some(&["yes"]));
+    let err = ApifoxHelper
+        .run_command("upload", &h.invocation(), None)
+        .unwrap_err();
+    assert!(err.to_string().contains("已阻止上传"), "{err}");
+    assert_eq!(h.requests().len(), 1);
+}

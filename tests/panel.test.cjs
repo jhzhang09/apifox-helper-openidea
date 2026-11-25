@@ -1567,3 +1567,25 @@ test("宿主 focus-endpoint 推送与初始 focusOperationId 自动选中目标�
   assert.equal(p.$("spec").classList.contains("hidden"), false);
   p.dom.window.close();
 });
+
+test("未解析外部类型显示确认后可同步，真实错误仍提示需修复后同步", () => {
+  const p = panel();
+  const e = treeExport();
+  e.warnings = [
+    "无法解析类型 FlowDefinition（src/main/java/demo/UserController.java），未推测字段",
+  ];
+  p.reply({ op: "scan", export: e });
+  assert.match(
+    p.$("diagnostic-summary").textContent,
+    /1 条未解析类型（确认后可同步）/,
+  );
+  assert.doesNotMatch(p.$("diagnostic-summary").textContent, /需修复后同步/);
+
+  e.warnings.push("重复路由 GET /users（原始路由 /users），保留首个声明");
+  p.reply({ op: "scan", export: e });
+  assert.match(
+    p.$("diagnostic-summary").textContent,
+    /1 条错误（需修复后同步），1 条未解析类型（确认后可同步）/,
+  );
+  p.dom.window.close();
+});

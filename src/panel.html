@@ -1074,9 +1074,20 @@
         }
         diagnostics(result);
         scanTime(cached);
+        const warnings = result.warnings || [];
+        const blockingCount = warnings.filter(
+          (w) => !isUnresolvedWarning(w),
+        ).length;
+        const unresolvedCount = warnings.length - blockingCount;
+        const warningSummary = [
+          blockingCount ? `${blockingCount} 条错误` : "",
+          unresolvedCount ? `${unresolvedCount} 条未解析类型` : "",
+        ]
+          .filter(Boolean)
+          .join("、");
         status(
-          `${cached ? "已恢复上次扫描，" : ""}识别到 ${result.endpoints.length} 个接口，${result.warnings.length} 条错误，${(result.notices || []).length} 条结构提示。`,
-          result.warnings.length > 0,
+          `${cached ? "已恢复上次扫描，" : ""}识别到 ${result.endpoints.length} 个接口，${warningSummary || "0 条错误"}，${(result.notices || []).length} 条结构提示。`,
+          blockingCount > 0,
         );
       }
       function restoreSnapshot(state) {
@@ -1122,15 +1133,25 @@
         li.append(link, close + (after || ""));
         return li;
       }
+      function isUnresolvedWarning(msg) {
+        return (
+          msg.startsWith("无法解析类型 ") || msg.startsWith("无法解析父类型 ")
+        );
+      }
       function diagnostics(value) {
         const warnings = value.warnings || [],
           notices = value.notices || [],
           box = $("diagnostics"),
           list = $("diagnostic-list");
+        const blocking = warnings.filter((w) => !isUnresolvedWarning(w));
+        const unresolved = warnings.filter((w) => isUnresolvedWarning(w));
         box.open = warnings.length > 0;
         box.classList.toggle("hidden", !warnings.length && !notices.length);
         $("diagnostic-summary").textContent = [
-          warnings.length ? `${warnings.length} 条错误（需修复后同步）` : "",
+          blocking.length ? `${blocking.length} 条错误（需修复后同步）` : "",
+          unresolved.length
+            ? `${unresolved.length} 条未解析类型（确认后可同步）`
+            : "",
           notices.length ? `${notices.length} 条结构提示` : "",
         ]
           .filter(Boolean)

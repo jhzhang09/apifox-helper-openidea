@@ -1,5 +1,12 @@
 # 更新记录
 
+## 0.1.16 — 2026-11-25
+
+- 为类型解析引入 `ClassIndex` 索引并跳过基础类型的冗余扫描，将宿主 `EndpointsProvider` 改为轻量级路由索引，修复大项目打开或同步时超出 600 亿 WASM fuel 崩溃（#1）。
+- 词法扫描合并为单次遍历并优化字节切片处理，支持 Java 15+ `""" ... """` 文本块、Kotlin 原始字符串与嵌套块注释，兼容 `sealed` / `non-sealed` / `value class` / `inner class` / `fun interface` / `data object` 等现代类修饰符。
+- 支持 Spring Boot 3 通配路径变量 `{*var}` 规范化、`HttpSession` 等框架注入参数忽略、`org.springframework.core.io.Resource` 二进制流、`Pair`、常见 JSON 动态容器（`JSONObject` / `JSONArray` / `Dict` / `JsonNode`）以及带后缀的 Maven YAML 占位符（如 `@currentDate@Z`）。
+- 第三方 JAR 未解析类型改为在同步确认弹窗中显式提示风险并允许确认放行，真实契约错误（路由冲突、导入歧义、`@JsonValue` 失败等）仍保持硬阻断。
+
 ## 0.1.15 — 2026-11-19
 
 - 从枚举构造器直接赋值和 getter 返回字段确定 `@JsonValue` 的绑定，无法可靠确定时阻止同步。

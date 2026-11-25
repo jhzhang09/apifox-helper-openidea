@@ -153,3 +153,16 @@ fn wildcard_external_tree_import_is_not_shadowed_by_an_unrelated_project_class()
             .is_some()
     );
 }
+#[test]
+fn maven_placeholder_with_suffix_does_not_break_yaml_sibling_properties() {
+    let mut s = ProjectSettings::default();
+    s.config(
+        "application.yml",
+        "ruoyi:\n  buildVersion: @currentDate@Z # build time\nserver:\n  port: 9090\nsse:\n  path: /resource/sse\nspring:\n  profiles:\n    active: @profiles.active@\n",
+    )
+    .unwrap();
+    let c = s.finish();
+    assert_eq!(c.debug_url(), "http://localhost:9090");
+    assert_eq!(c.route("${sse.path}/close").unwrap(), "/resource/sse/close");
+    assert!(c.route("${ruoyi.buildVersion}").is_err());
+}
