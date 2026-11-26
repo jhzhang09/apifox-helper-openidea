@@ -693,9 +693,243 @@ fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
+struct WorkspacePom {
+    depth: usize,
+    path: String,
+    data: PomData,
+}
+
+fn load_repo_pom_cached<'a>(
+    repo_roots: &[String],
+    group: &str,
+    artifact: &str,
+    version: &str,
+    cache: &'a mut HashMap<(String, String, String), Option<PomData>>,
+    loaded_parent_poms: &mut HashSet<(String, String, String)>,
+) -> Option<&'a PomData> {
+    let key = (group.to_string(), artifact.to_string(), version.to_string());
+    if !cache.contains_key(&key) {
+        loaded_parent_poms.insert(key.clone());
+        let parsed = read_repo_pom(repo_roots, group, artifact, version).map(|t| parse_pom(&t));
+        cache.insert(key.clone(), parsed);
+    }
+    cache.get(&key).and_then(|opt| opt.as_ref())
+}
+
+fn collect_pom_chain(
+    start_idx: usize,
+    poms: &[WorkspacePom],
+    workspace_by_coord: &HashMap<(String, String), usize>,
+    repo_roots: &[String],
+    repo_cache: &mut HashMap<(String, String, String), Option<PomData>>,
+    loaded_parent_poms: &mut HashSet<(String, String, String)>,
+) -> Vec<PomData> {
+    let mut chain = Vec::new();
+    let mut seen_ws = HashSet::new();
+    let mut seen_repo = HashSet::new();
+    seen_ws.insert(start_idx);
+    chain.push(poms[start_idx].data.clone());
+    let mut next_parent = poms[start_idx].data.parent.clone();
+
+    for _ in 0..6 {
+        let Some((pg, pa, pv)) = next_parent else {
+            break;
+        };
+        if let Some(&ws_idx) = workspace_by_coord.get(&(pg.clone(), pa.clone()))
+            && seen_ws.insert(ws_idx)
+        {
+            chain.push(poms[ws_idx].data.clone());
+            next_parent = poms[ws_idx].data.parent.clone();
+            continue;
+        }
+        if pv.contains("${") || !seen_repo.insert((pg.clone(), pa.clone(), pv.clone())) {
+            break;
+        }
+        let Some(parent_pom) =
+            load_repo_pom_cached(repo_roots, &pg, &pa, &pv, repo_cache, loaded_parent_poms)
+                .cloned()
+        else {
+            break;
+        };
+        next_parent = parent_pom.parent.clone();
+        chain.push(parent_pom);
+    }
+
+    chain.reverse();
+    chain
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_bom_managed(
+    group: &str,
+    artifact: &str,
+    version: &str,
+    inherited_props: &BTreeMap<String, String>,
+    repo_roots: &[String],
+    repo_cache: &mut HashMap<(String, String, String), Option<PomData>>,
+    loaded_parent_poms: &mut HashSet<(String, String, String)>,
+    visited_boms: &mut HashSet<(String, String, String)>,
+    depth: u8,
+    out_managed: &mut HashMap<(String, String), String>,
+) {
+    if depth > 2
+        || version.contains("${")
+        || !visited_boms.insert((group.to_string(), artifact.to_string(), version.to_string()))
+    {
+        return;
+    }
+    let Some(bom) = load_repo_pom_cached(
+        repo_roots,
+        group,
+        artifact,
+        version,
+        repo_cache,
+        loaded_parent_poms,
+    )
+    .cloned() else {
+        return;
+    };
+    let mut bom_props = inherited_props.clone();
+    for (k, v) in &bom.properties {
+        if matches!(
+            k.as_str(),
+            "project.version" | "project.groupId" | "project.parent.version"
+        ) {
+            bom_props.insert(k.clone(), v.clone());
+        } else {
+            bom_props.entry(k.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    let mut nested_boms = Vec::new();
+    for (mg, ma, mv, ms) in &bom.managed_deps {
+        let g_res = interpolate_props(mg, &bom_props);
+        let a_res = interpolate_props(ma, &bom_props);
+        let Some(mv) = mv else {
+            continue;
+        };
+        let v_res = interpolate_props(mv, &bom_props);
+        if v_res.contains("${") || v_res.is_empty() {
+            continue;
+        }
+        if ms.as_deref() == Some("import") {
+            nested_boms.push((g_res, a_res, v_res));
+        } else {
+            out_managed.entry((g_res, a_res)).or_insert(v_res);
+        }
+    }
+    for (bg, ba, bv) in nested_boms {
+        expand_bom_managed(
+            &bg,
+            &ba,
+            &bv,
+            &bom_props,
+            repo_roots,
+            repo_cache,
+            loaded_parent_poms,
+            visited_boms,
+            depth + 1,
+            out_managed,
+        );
+    }
+}
+
+struct EffectivePom {
+    props: BTreeMap<String, String>,
+    effective_managed: HashMap<(String, String), String>,
+    own_managed: HashMap<(String, String), String>,
+}
+
+fn resolve_effective_pom(
+    chain: &[PomData],
+    repo_roots: &[String],
+    repo_cache: &mut HashMap<(String, String, String), Option<PomData>>,
+    loaded_parent_poms: &mut HashSet<(String, String, String)>,
+) -> EffectivePom {
+    let mut effective_props = BTreeMap::new();
+    for pom in chain {
+        for (k, v) in &pom.properties {
+            effective_props.insert(k.clone(), v.clone());
+        }
+    }
+
+    let mut effective_managed: HashMap<(String, String), String> = HashMap::new();
+    let mut parent_snapshot: HashMap<(String, String), String> = HashMap::new();
+    let mut visited_boms = HashSet::new();
+
+    for (idx, pom) in chain.iter().enumerate() {
+        let is_current = idx + 1 == chain.len();
+        if is_current {
+            parent_snapshot = effective_managed.clone();
+        }
+        let mut step_props = effective_props.clone();
+        for (k, v) in &pom.properties {
+            if matches!(
+                k.as_str(),
+                "project.version" | "project.groupId" | "project.parent.version"
+            ) {
+                step_props.insert(k.clone(), v.clone());
+            }
+        }
+        let mut bom_managed = HashMap::new();
+        for (mg, ma, mv, ms) in &pom.managed_deps {
+            if ms.as_deref() != Some("import") {
+                continue;
+            }
+            let g_res = interpolate_props(mg, &step_props);
+            let a_res = interpolate_props(ma, &step_props);
+            let Some(mv) = mv else {
+                continue;
+            };
+            let v_res = interpolate_props(mv, &step_props);
+            if !v_res.contains("${") && !v_res.is_empty() {
+                expand_bom_managed(
+                    &g_res,
+                    &a_res,
+                    &v_res,
+                    &step_props,
+                    repo_roots,
+                    repo_cache,
+                    loaded_parent_poms,
+                    &mut visited_boms,
+                    0,
+                    &mut bom_managed,
+                );
+            }
+        }
+        for (coord, ver) in bom_managed {
+            effective_managed.insert(coord, ver);
+        }
+        for (mg, ma, mv, ms) in &pom.managed_deps {
+            if ms.as_deref() == Some("import") {
+                continue;
+            }
+            let g_res = interpolate_props(mg, &step_props);
+            let a_res = interpolate_props(ma, &step_props);
+            let Some(mv) = mv else {
+                continue;
+            };
+            let v_res = interpolate_props(mv, &step_props);
+            if !v_res.contains("${") && !v_res.is_empty() {
+                effective_managed.insert((g_res, a_res), v_res);
+            }
+        }
+    }
+
+    let own_managed = effective_managed
+        .iter()
+        .filter(|(k, v)| parent_snapshot.get(*k) != Some(*v))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+
+    EffectivePom {
+        props: effective_props,
+        effective_managed,
+        own_managed,
+    }
+}
+
 fn collect_project_deps(project: &host::Project, repo_roots: &[String]) -> ProjectDeps {
     let mut out = ProjectDeps::default();
-    let mut global_props = BTreeMap::new();
     let mut poms = Vec::new();
     let mut fp = 0xcbf29ce484222325u64;
     if let Ok(mut files) = project.find_files("**/pom.xml", MAX_POM_FILES) {
@@ -708,99 +942,85 @@ fn collect_project_deps(project: &host::Project, repo_roots: &[String]) -> Proje
                 fp = fnv1a_update(fp, path.as_bytes());
                 fp = fnv1a_update(fp, &[0]);
                 fp = fnv1a_update(fp, text.as_bytes());
-                let pom = parse_pom(&text);
-                if let Some(coord) = &pom.self_coord {
+                let data = parse_pom(&text);
+                if let Some(coord) = &data.self_coord {
                     out.workspace_modules.insert(coord.clone());
                 }
-                for (k, v) in &pom.properties {
-                    global_props.entry(k.clone()).or_insert_with(|| v.clone());
-                }
-                poms.push(pom);
+                let norm = path.trim_start_matches('/');
+                let depth = norm.bytes().filter(|&b| b == b'/').count();
+                poms.push(WorkspacePom {
+                    depth,
+                    path: norm.to_string(),
+                    data,
+                });
             }
         }
     }
     out.pom_fingerprint = fp;
+    poms.sort_by(|a, b| a.depth.cmp(&b.depth).then_with(|| a.path.cmp(&b.path)));
 
-    // 尝试从本地 Maven 仓库加载外部父 POM 与 import BOM
-    let mut parent_queue: Vec<(String, String, String, u8)> = poms
-        .iter()
-        .filter_map(|p| {
-            p.parent
-                .as_ref()
-                .map(|(g, a, v)| (g.clone(), a.clone(), v.clone(), 0))
-        })
-        .collect();
-    while let Some((g, a, v, depth)) = parent_queue.pop() {
-        if depth >= 4
-            || v.contains("${")
-            || !out
-                .loaded_parent_poms
-                .insert((g.clone(), a.clone(), v.clone()))
-        {
-            continue;
+    let mut workspace_by_coord: HashMap<(String, String), usize> = HashMap::new();
+    for (idx, pom) in poms.iter().enumerate() {
+        if let Some(coord) = &pom.data.self_coord {
+            workspace_by_coord.entry(coord.clone()).or_insert(idx);
         }
-        if let Some(pom_text) = read_repo_pom(repo_roots, &g, &a, &v) {
-            let pom = parse_pom(&pom_text);
-            for (k, val) in &pom.properties {
-                global_props.entry(k.clone()).or_insert_with(|| val.clone());
+    }
+
+    let mut repo_cache: HashMap<(String, String, String), Option<PomData>> = HashMap::new();
+    let mut declared_map: BTreeMap<(String, String), Option<String>> = BTreeMap::new();
+
+    for idx in 0..poms.len() {
+        let chain = collect_pom_chain(
+            idx,
+            &poms,
+            &workspace_by_coord,
+            repo_roots,
+            &mut repo_cache,
+            &mut out.loaded_parent_poms,
+        );
+        let eff = resolve_effective_pom(
+            &chain,
+            repo_roots,
+            &mut repo_cache,
+            &mut out.loaded_parent_poms,
+        );
+        for (coord, ver) in eff.effective_managed {
+            out.preferred_versions.entry(coord).or_insert(ver);
+        }
+        for (coord, ver) in eff.own_managed {
+            out.preferred_versions.insert(coord, ver);
+        }
+        for (g, a, v) in &poms[idx].data.deps {
+            let g_res = interpolate_props(g, &eff.props);
+            let a_res = interpolate_props(a, &eff.props);
+            let v_res = v
+                .as_deref()
+                .map(|raw| interpolate_props(raw, &eff.props))
+                .filter(|s| !s.contains("${") && !s.is_empty())
+                .or_else(|| {
+                    out.preferred_versions
+                        .get(&(g_res.clone(), a_res.clone()))
+                        .cloned()
+                });
+            if let Some(ver) = &v_res {
+                out.preferred_versions
+                    .insert((g_res.clone(), a_res.clone()), ver.clone());
             }
-            if let Some((pg, pa, pv)) = &pom.parent {
-                parent_queue.push((pg.clone(), pa.clone(), pv.clone(), depth + 1));
-            }
-            for (mg, ma, mv, ms) in &pom.managed_deps {
-                let g_res = interpolate_props(mg, &global_props);
-                let a_res = interpolate_props(ma, &global_props);
-                if let Some(mv) = mv {
-                    let v_res = interpolate_props(mv, &global_props);
-                    if !v_res.contains("${") {
-                        if ms.as_deref() == Some("import") && depth < 2 {
-                            parent_queue.push((
-                                g_res.clone(),
-                                a_res.clone(),
-                                v_res.clone(),
-                                depth + 1,
-                            ));
-                        }
-                        out.preferred_versions
-                            .entry((g_res, a_res))
-                            .or_insert(v_res);
+            let coord = (g_res, a_res);
+            match declared_map.get_mut(&coord) {
+                Some(slot) => {
+                    if v_res.is_some() {
+                        *slot = v_res;
                     }
+                }
+                None => {
+                    declared_map.insert(coord, v_res);
                 }
             }
         }
     }
-
-    for pom in &poms {
-        let mut merged_props = global_props.clone();
-        for (k, v) in &pom.properties {
-            merged_props.insert(k.clone(), v.clone());
-        }
-        for (g, a, v, _) in &pom.managed_deps {
-            let g_res = interpolate_props(g, &merged_props);
-            let a_res = interpolate_props(a, &merged_props);
-            if let Some(v) = v {
-                let v_res = interpolate_props(v, &merged_props);
-                if !v_res.contains("${") {
-                    out.preferred_versions
-                        .entry((g_res, a_res))
-                        .or_insert(v_res);
-                }
-            }
-        }
-        for (g, a, v) in &pom.deps {
-            let g_res = interpolate_props(g, &merged_props);
-            let a_res = interpolate_props(a, &merged_props);
-            let v_res = v
-                .as_deref()
-                .map(|raw| interpolate_props(raw, &merged_props))
-                .filter(|s| !s.contains("${") && !s.is_empty());
-            if let Some(ver) = &v_res {
-                out.preferred_versions
-                    .entry((g_res.clone(), a_res.clone()))
-                    .or_insert_with(|| ver.clone());
-            }
-            out.declared_deps.push((g_res, a_res, v_res));
-        }
+    for ((g, a), v) in declared_map {
+        out.declared_deps.push((g, a, v));
     }
 
     collect_gradle_deps(project, &mut out);

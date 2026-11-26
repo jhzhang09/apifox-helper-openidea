@@ -1,5 +1,9 @@
 # 更新记录
 
+## 0.1.18 — 2026-11-26
+
+- 修复 Maven 父子 POM 版本解析优先级：按祖先父 POM / 导入 BOM → 当前子 POM 顺序合并 `<properties>` 与 `<dependencyManagement>`，使子 POM 的显式管理版本、属性覆盖与导入 BOM 正确覆盖父 POM 继承版本，避免在省略直接依赖 `<version>` 时静默读取旧版外部 JAR 模型。
+
 ## 0.1.17 — 2026-11-26
 
 - 新增外部依赖类型按需解析：优先读取已授权的 `~/.m2/repository` 与 `~/.gradle/caches`（`-sources.jar` 优先、纯 Rust `.class` 字节码兜底，支持父 POM/BOM 与同包嵌套枚举），自定义仓库或未授权目录时回退至离线 `mvn -o` + `javap -p -v` 并按 POM 指纹缓存类路径；同时支持 `FilePart`、`Part`、`Map.Entry` 与显式导入嵌套类型。

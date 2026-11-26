@@ -1,11 +1,11 @@
 id = "jhzhang.apifox-helper"
 name = "Apifox Helper for OpenIDEA"
-version = "0.1.17"
+version = "0.1.18"
 description = "从 Java/Kotlin Spring、JAX-RS 源码生成 OpenAPI，预览嵌套响应模型，同步到 Apifox 并调试 HTTP 接口。"
 authors = ["jhzhang"]
 license = "Apache-2.0"
 homepage = "https://github.com/jhzhang09/apifox-helper-openidea"
-change-notes = "新增外部 Maven/Gradle JAR（源码优先、字节码兜底）与离线 mvn/javap 依赖类型解析，支持 Spring 条件路由重载合并、全流程扫描进度条与后台轻量路由索引防超时/超燃料崩溃，并扩展 Lombok/Kotlin/委托构造/内置变换 @JsonValue 枚举解析与可点击定位。"
+change-notes = "修复 Maven 子 POM dependencyManagement 与属性覆盖父 POM 依赖版本不生效的问题，确保外部依赖类型按当前 POM 有效优先级解析。"
 icon = "icon.svg"
 categories = ["tools", "frameworks"]
 engines.openidea = "^1.9"

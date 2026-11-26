@@ -1537,3 +1537,343 @@ fn mvn_fallback_passes_offline_flag_when_invoked_and_respects_task_cancellation(
     .unwrap_err();
     assert!(matches!(err, openidea_plugin::Error::Cancelled));
 }
+
+fn setup_review_dto_versions(repo_root: &str, h: &MockHost) {
+    let class_1_0 = build_simple_classfile(
+        "org/review/dto/Item",
+        "java/lang/Object",
+        &[],
+        0x0021,
+        None,
+        &[("legacyName", "Ljava/lang/String;", None, None)],
+        &[],
+    );
+    let src_1_0 = b"package org.review.dto;\npublic class Item { public String legacyName; }\n";
+    let jar_1_0 = build_zip(&[("org/review/dto/Item.class", &class_1_0, false)]);
+    let sjar_1_0 = build_zip(&[("org/review/dto/Item.java", src_1_0, false)]);
+    let p_1_0 = format!("{repo_root}/org/review/api-dto/1.0/api-dto-1.0.jar");
+    let sp_1_0 = format!("{repo_root}/org/review/api-dto/1.0/api-dto-1.0-sources.jar");
+    h.add_external_file(&p_1_0, "");
+    h.add_external_file(&sp_1_0, "");
+    openidea_plugin::host::fs::write_bytes(&p_1_0, &jar_1_0).unwrap();
+    openidea_plugin::host::fs::write_bytes(&sp_1_0, &sjar_1_0).unwrap();
+
+    let class_2_0 = build_simple_classfile(
+        "org/review/dto/Item",
+        "java/lang/Object",
+        &[],
+        0x0021,
+        None,
+        &[("currentName", "Ljava/lang/String;", None, None)],
+        &[],
+    );
+    let src_2_0 = b"package org.review.dto;\npublic class Item { public String currentName; }\n";
+    let jar_2_0 = build_zip(&[("org/review/dto/Item.class", &class_2_0, false)]);
+    let sjar_2_0 = build_zip(&[("org/review/dto/Item.java", src_2_0, false)]);
+    let p_2_0 = format!("{repo_root}/org/review/api-dto/2.0/api-dto-2.0.jar");
+    let sp_2_0 = format!("{repo_root}/org/review/api-dto/2.0/api-dto-2.0-sources.jar");
+    h.add_external_file(&p_2_0, "");
+    h.add_external_file(&sp_2_0, "");
+    openidea_plugin::host::fs::write_bytes(&p_2_0, &jar_2_0).unwrap();
+    openidea_plugin::host::fs::write_bytes(&sp_2_0, &sjar_2_0).unwrap();
+}
+
+#[test]
+fn child_pom_dependency_management_and_properties_override_parent_pom_versions() {
+    let ctrl_src = r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class Controller {
+    @GetMapping("/item")
+    public org.review.dto.Item item() { return null; }
+}
+"#;
+
+    // 1. Maintainer repro: external parent POM manages 1.0, child overrides to 2.0, dependency omits version
+    {
+        let h = MockHost::install().with_capabilities(&[
+            "project.read",
+            "editor.read",
+            "storage",
+            "fs.read:/mock-m2",
+            "fs.write:/mock-m2",
+        ]);
+        setup_review_dto_versions("/mock-m2", &h);
+        h.add_external_file(
+            "/mock-m2/org/review/parent-bom/1.0.0/parent-bom-1.0.0.pom",
+            r#"<project>
+                <groupId>org.review</groupId>
+                <artifactId>parent-bom</artifactId>
+                <version>1.0.0</version>
+                <dependencyManagement>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.review</groupId>
+                            <artifactId>api-dto</artifactId>
+                            <version>1.0</version>
+                        </dependency>
+                    </dependencies>
+                </dependencyManagement>
+            </project>"#,
+        );
+        h.add_file(
+            "pom.xml",
+            r#"<project>
+                <parent>
+                    <groupId>org.review</groupId>
+                    <artifactId>parent-bom</artifactId>
+                    <version>1.0.0</version>
+                </parent>
+                <groupId>com.demo</groupId>
+                <artifactId>child-app</artifactId>
+                <version>1.0.0</version>
+                <dependencyManagement>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.review</groupId>
+                            <artifactId>api-dto</artifactId>
+                            <version>2.0</version>
+                        </dependency>
+                    </dependencies>
+                </dependencyManagement>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.review</groupId>
+                        <artifactId>api-dto</artifactId>
+                    </dependency>
+                </dependencies>
+            </project>"#,
+        );
+        h.add_file("src/main/java/demo/Controller.java", ctrl_src);
+
+        let mut classes = source::parse("src/main/java/demo/Controller.java", ctrl_src);
+        let res = resolve_external_classes_with_roots(
+            &h.invocation().project().unwrap(),
+            "/project",
+            &classes,
+            &Scope::default(),
+            &["/mock-m2"],
+        );
+        assert_eq!(res.jar_count, 1);
+        classes.extend(res.classes);
+        let export = openapi::generate(&classes, &Scope::default(), "API");
+        assert!(export.warnings.is_empty(), "{:?}", export.warnings);
+        let props = &export.document["components"]["schemas"]["Item"]["properties"];
+        assert!(props.get("currentName").is_some(), "props: {props}");
+        assert!(props.get("legacyName").is_none(), "props: {props}");
+    }
+
+    // 2. Control: external parent POM manages 1.0, child does not override -> resolves 1.0 (legacyName)
+    {
+        let h = MockHost::install().with_capabilities(&[
+            "project.read",
+            "editor.read",
+            "storage",
+            "fs.read:/mock-m2",
+            "fs.write:/mock-m2",
+        ]);
+        setup_review_dto_versions("/mock-m2", &h);
+        h.add_external_file(
+            "/mock-m2/org/review/parent-bom/1.0.0/parent-bom-1.0.0.pom",
+            r#"<project>
+                <groupId>org.review</groupId>
+                <artifactId>parent-bom</artifactId>
+                <version>1.0.0</version>
+                <dependencyManagement>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.review</groupId>
+                            <artifactId>api-dto</artifactId>
+                            <version>1.0</version>
+                        </dependency>
+                    </dependencies>
+                </dependencyManagement>
+            </project>"#,
+        );
+        h.add_file(
+            "pom.xml",
+            r#"<project>
+                <parent>
+                    <groupId>org.review</groupId>
+                    <artifactId>parent-bom</artifactId>
+                    <version>1.0.0</version>
+                </parent>
+                <groupId>com.demo</groupId>
+                <artifactId>child-app</artifactId>
+                <version>1.0.0</version>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.review</groupId>
+                        <artifactId>api-dto</artifactId>
+                    </dependency>
+                </dependencies>
+            </project>"#,
+        );
+        h.add_file("src/main/java/demo/Controller.java", ctrl_src);
+
+        let mut classes = source::parse("src/main/java/demo/Controller.java", ctrl_src);
+        let res = resolve_external_classes_with_roots(
+            &h.invocation().project().unwrap(),
+            "/project",
+            &classes,
+            &Scope::default(),
+            &["/mock-m2"],
+        );
+        classes.extend(res.classes);
+        let export = openapi::generate(&classes, &Scope::default(), "API");
+        let props = &export.document["components"]["schemas"]["Item"]["properties"];
+        assert!(props.get("legacyName").is_some(), "props: {props}");
+    }
+
+    // 3. Workspace multi-module parent 1.0 + child dependencyManagement override 2.0 + unmodified sibling
+    {
+        let h = MockHost::install().with_capabilities(&[
+            "project.read",
+            "editor.read",
+            "storage",
+            "fs.read:/mock-m2",
+            "fs.write:/mock-m2",
+        ]);
+        setup_review_dto_versions("/mock-m2", &h);
+        h.add_file(
+            "pom.xml",
+            r#"<project>
+                <groupId>com.demo</groupId>
+                <artifactId>root</artifactId>
+                <version>1.0.0</version>
+                <dependencyManagement>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.review</groupId>
+                            <artifactId>api-dto</artifactId>
+                            <version>1.0</version>
+                        </dependency>
+                    </dependencies>
+                </dependencyManagement>
+            </project>"#,
+        );
+        h.add_file(
+            "api-module/pom.xml",
+            r#"<project>
+                <parent>
+                    <groupId>com.demo</groupId>
+                    <artifactId>root</artifactId>
+                    <version>1.0.0</version>
+                </parent>
+                <artifactId>api-module</artifactId>
+                <dependencyManagement>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.review</groupId>
+                            <artifactId>api-dto</artifactId>
+                            <version>2.0</version>
+                        </dependency>
+                    </dependencies>
+                </dependencyManagement>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.review</groupId>
+                        <artifactId>api-dto</artifactId>
+                    </dependency>
+                </dependencies>
+            </project>"#,
+        );
+        h.add_file(
+            "other-module/pom.xml",
+            r#"<project>
+                <parent>
+                    <groupId>com.demo</groupId>
+                    <artifactId>root</artifactId>
+                    <version>1.0.0</version>
+                </parent>
+                <artifactId>other-module</artifactId>
+            </project>"#,
+        );
+        h.add_file("api-module/src/main/java/demo/Controller.java", ctrl_src);
+
+        let mut classes = source::parse("api-module/src/main/java/demo/Controller.java", ctrl_src);
+        let res = resolve_external_classes_with_roots(
+            &h.invocation().project().unwrap(),
+            "/project",
+            &classes,
+            &Scope::default(),
+            &["/mock-m2"],
+        );
+        classes.extend(res.classes);
+        let export = openapi::generate(&classes, &Scope::default(), "API");
+        let props = &export.document["components"]["schemas"]["Item"]["properties"];
+        assert!(props.get("currentName").is_some(), "props: {props}");
+        assert!(props.get("legacyName").is_none(), "props: {props}");
+    }
+
+    // 4. Child POM <properties> overrides parent's ${dto.version} (1.0 -> 2.0)
+    {
+        let h = MockHost::install().with_capabilities(&[
+            "project.read",
+            "editor.read",
+            "storage",
+            "fs.read:/mock-m2",
+            "fs.write:/mock-m2",
+        ]);
+        setup_review_dto_versions("/mock-m2", &h);
+        h.add_external_file(
+            "/mock-m2/org/review/parent-prop/1.0.0/parent-prop-1.0.0.pom",
+            r#"<project>
+                <groupId>org.review</groupId>
+                <artifactId>parent-prop</artifactId>
+                <version>1.0.0</version>
+                <properties>
+                    <dto.version>1.0</dto.version>
+                </properties>
+                <dependencyManagement>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.review</groupId>
+                            <artifactId>api-dto</artifactId>
+                            <version>${dto.version}</version>
+                        </dependency>
+                    </dependencies>
+                </dependencyManagement>
+            </project>"#,
+        );
+        h.add_file(
+            "pom.xml",
+            r#"<project>
+                <parent>
+                    <groupId>org.review</groupId>
+                    <artifactId>parent-prop</artifactId>
+                    <version>1.0.0</version>
+                </parent>
+                <groupId>com.demo</groupId>
+                <artifactId>prop-child</artifactId>
+                <version>1.0.0</version>
+                <properties>
+                    <dto.version>2.0</dto.version>
+                </properties>
+                <dependencies>
+                    <dependency>
+                        <groupId>org.review</groupId>
+                        <artifactId>api-dto</artifactId>
+                    </dependency>
+                </dependencies>
+            </project>"#,
+        );
+        h.add_file("src/main/java/demo/Controller.java", ctrl_src);
+
+        let mut classes = source::parse("src/main/java/demo/Controller.java", ctrl_src);
+        let res = resolve_external_classes_with_roots(
+            &h.invocation().project().unwrap(),
+            "/project",
+            &classes,
+            &Scope::default(),
+            &["/mock-m2"],
+        );
+        classes.extend(res.classes);
+        let export = openapi::generate(&classes, &Scope::default(), "API");
+        let props = &export.document["components"]["schemas"]["Item"]["properties"];
+        assert!(props.get("currentName").is_some(), "props: {props}");
+        assert!(props.get("legacyName").is_none(), "props: {props}");
+    }
+}
