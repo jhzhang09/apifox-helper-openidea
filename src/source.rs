@@ -1,5 +1,5 @@
 //! 本地源码解析：按词法边界处理注解、泛型和声明，不执行项目代码。
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 #[derive(Clone, Debug)]
 pub struct Token {
@@ -59,10 +59,21 @@ pub struct Field {
     pub ty: String,
     pub annotations: Vec<Annotation>,
     pub doc: String,
+    pub is_final: bool,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EnumReturnExpr {
+    Field(String),
+    Method(String),
+    Name,
+    NameLower,
+    NameUpper,
+    Ordinal,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Method {
     pub returned_field: Option<String>,
+    pub returned_enum_expr: Option<EnumReturnExpr>,
     pub name: String,
     pub ty: String,
     pub annotations: Vec<Annotation>,
@@ -79,6 +90,13 @@ pub struct EnumVariant {
     pub args: Vec<String>,
     pub arg_literals: Vec<bool>,
     pub arg_strings: Vec<bool>,
+    pub method_returns: BTreeMap<String, (String, bool)>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnumConstructor {
+    pub arity: usize,
+    pub bindings: BTreeMap<String, usize>,
+    pub const_bindings: BTreeMap<String, (String, bool)>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct Class {
@@ -97,7 +115,9 @@ pub struct Class {
     pub methods: Vec<Method>,
     pub variants: Vec<String>,
     pub enum_items: Vec<EnumVariant>,
-    pub enum_constructors: Vec<BTreeMap<String, usize>>,
+    pub enum_constructors: Vec<EnumConstructor>,
+    pub is_interface: bool,
+    pub is_external: bool,
 }
 impl Class {
     pub fn qualified(&self) -> String {
@@ -617,6 +637,11 @@ fn prefix(ts: &[Token], mut i: usize) -> (Vec<Annotation>, String, usize) {
 }
 fn field(ts: &[Token], kotlin: bool) -> Option<Field> {
     let (a, d, mut i) = prefix(ts, 0);
+    let is_final = if kotlin {
+        t(ts, i) == "val"
+    } else {
+        ts[..i].iter().any(|x| x.text == "final")
+    };
     if matches!(t(ts, i), "val" | "var" | "vararg") {
         i += 1;
     }
@@ -649,6 +674,7 @@ fn field(ts: &[Token], kotlin: bool) -> Option<Field> {
         ty,
         annotations: a,
         doc: d,
+        is_final,
     })
 }
 
@@ -906,6 +932,365 @@ fn parse_base_clauses(
     }
 }
 
+fn is_simple_ident(s: &str) -> bool {
+    s.chars()
+        .next()
+        .is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')
+        && s.chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        && !matches!(
+            s,
+            "return" | "this" | "super" | "null" | "true" | "false" | "new"
+        )
+}
+
+fn parse_enum_return_expr(
+    body: &[&str],
+    eq_expr: Option<&[&str]>,
+    kotlin: bool,
+) -> Option<EnumReturnExpr> {
+    let mut expr = if let Some(eq) = eq_expr {
+        eq.strip_suffix(&[";"]).unwrap_or(eq)
+    } else if body.first() == Some(&"return") && body.last() == Some(&";") && body.len() >= 3 {
+        &body[1..body.len() - 1]
+    } else {
+        return None;
+    };
+    if expr.starts_with(&["this", "."]) {
+        expr = &expr[2..];
+    }
+    match expr {
+        ["name", "(", ")"] => Some(EnumReturnExpr::Name),
+        ["name"] if kotlin => Some(EnumReturnExpr::Name),
+        ["name", ".", "lowercase", "(", ")"] if kotlin => Some(EnumReturnExpr::NameLower),
+        ["name", ".", "uppercase", "(", ")"] if kotlin => Some(EnumReturnExpr::NameUpper),
+        ["name", "(", ")", ".", "toLowerCase", "(", inner @ .., ")"]
+            if inner.is_empty()
+                || inner.ends_with(&["Locale", ".", "ROOT"])
+                || inner.ends_with(&["Locale", ".", "ENGLISH"]) =>
+        {
+            Some(EnumReturnExpr::NameLower)
+        }
+        ["name", "(", ")", ".", "toUpperCase", "(", inner @ .., ")"]
+            if inner.is_empty()
+                || inner.ends_with(&["Locale", ".", "ROOT"])
+                || inner.ends_with(&["Locale", ".", "ENGLISH"]) =>
+        {
+            Some(EnumReturnExpr::NameUpper)
+        }
+        ["ordinal", "(", ")"] => Some(EnumReturnExpr::Ordinal),
+        ["ordinal"] if kotlin => Some(EnumReturnExpr::Ordinal),
+        [m, "(", ")"] if is_simple_ident(m) => Some(EnumReturnExpr::Method((*m).to_string())),
+        [f] if is_simple_ident(f) => Some(EnumReturnExpr::Field((*f).to_string())),
+        _ => None,
+    }
+}
+
+fn parse_enum_variant_methods(
+    tokens: &[Token],
+    kotlin: bool,
+    out: &mut BTreeMap<String, (String, bool)>,
+) {
+    let mut m = 0usize;
+    while m < tokens.len() {
+        if t(tokens, m) == ";" {
+            m += 1;
+            continue;
+        }
+        let (_, _, n) = prefix(tokens, m);
+        if n >= tokens.len() {
+            break;
+        }
+        if t(tokens, n) == "{" {
+            m = paired(tokens, n) + 1;
+            continue;
+        }
+        let mut par = n;
+        while par < tokens.len() && !matches!(t(tokens, par), "(" | ";" | "{" | "=") {
+            if t(tokens, par) == "<" {
+                let end = paired(tokens, par);
+                if end >= tokens.len() {
+                    par = tokens.len();
+                    break;
+                }
+                par = end;
+            }
+            par += 1;
+        }
+        if t(tokens, par) == "(" {
+            let end = paired(tokens, par);
+            let name = t(tokens, par - 1).to_string();
+            let mut after = end + 1;
+            while after < tokens.len() && !matches!(t(tokens, after), "{" | ";" | "=") {
+                if kotlin && tokens[after].line > tokens[end].line {
+                    break;
+                }
+                after += 1;
+            }
+            let finish = if t(tokens, after) == "{" {
+                paired(tokens, after) + 1
+            } else if t(tokens, after) == "=" {
+                let mut e = after + 1;
+                while e < tokens.len() && tokens[e].line == tokens[after].line {
+                    if t(tokens, e) == "{" {
+                        e = paired(tokens, e);
+                    }
+                    e += 1;
+                }
+                e
+            } else if t(tokens, after) == ";" {
+                after + 1
+            } else {
+                after
+            };
+            if par + 1 == end {
+                let expr_slice = if t(tokens, after) == "{" && finish >= after + 4 {
+                    let inner = &tokens[after + 1..finish - 1];
+                    if t(inner, 0) == "return" && inner.last().is_some_and(|tok| tok.text == ";") {
+                        Some(&inner[1..inner.len() - 1])
+                    } else {
+                        None
+                    }
+                } else if t(tokens, after) == "=" && finish > after + 1 {
+                    let inner = &tokens[after + 1..finish];
+                    let trimmed = if inner.last().is_some_and(|tok| tok.text == ";") {
+                        &inner[..inner.len() - 1]
+                    } else {
+                        inner
+                    };
+                    Some(trimmed)
+                } else {
+                    None
+                };
+                if let Some(slice) = expr_slice {
+                    let (val, lit, is_str) = eval_enum_arg(slice);
+                    if lit {
+                        out.insert(name, (val, is_str));
+                    }
+                }
+            }
+            m = finish.max(end + 1);
+        } else {
+            let mut end = par;
+            while end < tokens.len() && t(tokens, end) != ";" {
+                if t(tokens, end) == "{" {
+                    end = paired(tokens, end);
+                }
+                end += 1;
+            }
+            m = end + 1;
+        }
+    }
+}
+
+struct RawEnumCtor<'a> {
+    arity: usize,
+    param_names: Vec<Option<String>>,
+    bindings: BTreeMap<String, usize>,
+    const_bindings: BTreeMap<String, (String, bool)>,
+    tainted: HashSet<String>,
+    delegate_args: Option<Vec<&'a [Token]>>,
+}
+
+fn split_top_level_statements(tokens: &[Token]) -> Vec<&[Token]> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    for (i, tok) in tokens.iter().enumerate() {
+        match tok.text.as_str() {
+            "(" => paren += 1,
+            ")" => paren = paren.saturating_sub(1),
+            "{" => brace += 1,
+            "}" => brace = brace.saturating_sub(1),
+            ";" if paren == 0 && brace == 0 => {
+                out.push(&tokens[start..=i]);
+                start = i + 1;
+            }
+            _ => (),
+        }
+    }
+    if start < tokens.len() {
+        out.push(&tokens[start..]);
+    }
+    out
+}
+
+fn parse_raw_enum_ctor<'a>(
+    params: &[&[Token]],
+    body_tokens: &'a [Token],
+    kotlin: bool,
+) -> RawEnumCtor<'a> {
+    let param_names: Vec<_> = params
+        .iter()
+        .map(|param| field(param, kotlin).map(|f| f.name))
+        .collect();
+    let has_control_flow = body_tokens.iter().any(|tok| {
+        matches!(
+            tok.text.as_str(),
+            "if" | "else" | "switch" | "for" | "while" | "try" | "catch"
+        )
+    });
+    let mut bindings = BTreeMap::new();
+    let mut const_bindings = BTreeMap::new();
+    let mut tainted = HashSet::new();
+    let mut delegate_args = None;
+
+    for (stmt_idx, stmt) in split_top_level_statements(body_tokens)
+        .into_iter()
+        .enumerate()
+    {
+        let core = if stmt.last().is_some_and(|tok| tok.text == ";") {
+            &stmt[..stmt.len() - 1]
+        } else {
+            stmt
+        };
+        if core.is_empty() {
+            continue;
+        }
+        if stmt_idx == 0
+            && !has_control_flow
+            && t(core, 0) == "this"
+            && t(core, 1) == "("
+            && paired(core, 1) + 1 == core.len()
+        {
+            delegate_args = Some(split(&core[2..core.len() - 1], ","));
+            continue;
+        }
+        let eq_pos = core.iter().position(|tok| tok.text == "=");
+        if let Some(eq) = eq_pos {
+            let lhs = &core[..eq];
+            let rhs = &core[eq + 1..];
+            let target = if lhs.len() == 3 && lhs[0].text == "this" && lhs[1].text == "." {
+                Some(lhs[2].text.as_str())
+            } else if lhs.len() == 1
+                && is_simple_ident(&lhs[0].text)
+                && !param_names
+                    .iter()
+                    .any(|p| p.as_deref() == Some(lhs[0].text.as_str()))
+            {
+                Some(lhs[0].text.as_str())
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                if has_control_flow || tainted.contains(target) {
+                    bindings.remove(target);
+                    const_bindings.remove(target);
+                    tainted.insert(target.to_string());
+                    continue;
+                }
+                if rhs.len() == 1
+                    && let Some(idx) = param_names
+                        .iter()
+                        .position(|p| p.as_deref() == Some(rhs[0].text.as_str()))
+                {
+                    if bindings.contains_key(target) || const_bindings.contains_key(target) {
+                        bindings.remove(target);
+                        const_bindings.remove(target);
+                        tainted.insert(target.to_string());
+                    } else {
+                        bindings.insert(target.to_string(), idx);
+                    }
+                } else {
+                    let (val, lit, is_str) = eval_enum_arg(rhs);
+                    if lit {
+                        if bindings.contains_key(target) || const_bindings.contains_key(target) {
+                            bindings.remove(target);
+                            const_bindings.remove(target);
+                            tainted.insert(target.to_string());
+                        } else {
+                            const_bindings.insert(target.to_string(), (val, is_str));
+                        }
+                    } else {
+                        bindings.remove(target);
+                        const_bindings.remove(target);
+                        tainted.insert(target.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    RawEnumCtor {
+        arity: params.len(),
+        param_names,
+        bindings,
+        const_bindings,
+        tainted,
+        delegate_args,
+    }
+}
+
+fn resolve_enum_constructors(raw_ctors: Vec<RawEnumCtor<'_>>) -> Vec<EnumConstructor> {
+    let mut resolved: Vec<EnumConstructor> = raw_ctors
+        .iter()
+        .map(|c| EnumConstructor {
+            arity: c.arity,
+            bindings: c.bindings.clone(),
+            const_bindings: c.const_bindings.clone(),
+        })
+        .collect();
+
+    for _ in 0..4 {
+        let snapshot = resolved.clone();
+        let mut changed = false;
+        for (i, raw) in raw_ctors.iter().enumerate() {
+            let Some(args) = &raw.delegate_args else {
+                continue;
+            };
+            let mut targets = snapshot.iter().filter(|c| c.arity == args.len());
+            let (Some(target), None) = (targets.next(), targets.next()) else {
+                continue;
+            };
+            let mut next_bindings = raw.bindings.clone();
+            let mut next_consts = raw.const_bindings.clone();
+            for (field, &target_idx) in &target.bindings {
+                if raw.tainted.contains(field)
+                    || next_bindings.contains_key(field)
+                    || next_consts.contains_key(field)
+                {
+                    continue;
+                }
+                let Some(arg_slice) = args.get(target_idx) else {
+                    continue;
+                };
+                if arg_slice.len() == 1
+                    && let Some(p_idx) = raw
+                        .param_names
+                        .iter()
+                        .position(|p| p.as_deref() == Some(arg_slice[0].text.as_str()))
+                {
+                    next_bindings.insert(field.clone(), p_idx);
+                } else {
+                    let (val, lit, is_str) = eval_enum_arg(arg_slice);
+                    if lit {
+                        next_consts.insert(field.clone(), (val, is_str));
+                    }
+                }
+            }
+            for (field, val) in &target.const_bindings {
+                if !raw.tainted.contains(field)
+                    && !next_bindings.contains_key(field)
+                    && !next_consts.contains_key(field)
+                {
+                    next_consts.insert(field.clone(), val.clone());
+                }
+            }
+            if resolved[i].bindings != next_bindings || resolved[i].const_bindings != next_consts {
+                resolved[i].bindings = next_bindings;
+                resolved[i].const_bindings = next_consts;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    resolved
+}
+
 fn parse_tokens(
     path: &str,
     ts: &[Token],
@@ -983,6 +1368,7 @@ fn parse_tokens(
         };
         let is_enum = t(ts, cstart) == "enum" || t(ts, cstart.saturating_sub(1)) == "enum";
         let is_interface = t(ts, cstart) == "interface";
+        c.is_interface = is_interface;
         let mut p = (cstart + 2).min(ts.len());
         if t(ts, p) == "<" {
             let e = paired(ts, p);
@@ -997,10 +1383,23 @@ fn parse_tokens(
         }
         if t(ts, p) == "(" {
             let e = paired(ts, p);
-            c.fields = split(&ts[p + 1..e], ",")
-                .iter()
-                .filter_map(|v| field(v, kotlin))
-                .collect();
+            let params = split(&ts[p + 1..e], ",");
+            let mut bindings = BTreeMap::new();
+            for (idx, v) in params.iter().enumerate() {
+                if let Some(f) = field(v, kotlin) {
+                    if is_enum {
+                        bindings.insert(f.name.clone(), idx);
+                    }
+                    c.fields.push(f);
+                }
+            }
+            if is_enum {
+                c.enum_constructors.push(EnumConstructor {
+                    arity: params.len(),
+                    bindings,
+                    const_bindings: BTreeMap::new(),
+                });
+            }
             p = e + 1;
         }
         let base_start = p;
@@ -1051,15 +1450,28 @@ fn parse_tokens(
                 let mut args = Vec::new();
                 let mut arg_literals = Vec::new();
                 let mut arg_strings = Vec::new();
-                if t(v, idx + 1) == "(" {
-                    let arg_end = paired(v, idx + 1);
+                let mut body_idx = idx + 1;
+                if t(v, body_idx) == "(" {
+                    let arg_end = paired(v, body_idx);
                     if arg_end < v.len() {
-                        for arg_slice in split(&v[idx + 2..arg_end], ",") {
+                        for arg_slice in split(&v[body_idx + 1..arg_end], ",") {
                             let (val, lit, is_str) = eval_enum_arg(arg_slice);
                             args.push(val);
                             arg_literals.push(lit);
                             arg_strings.push(is_str);
                         }
+                    }
+                    body_idx = arg_end + 1;
+                }
+                let mut method_returns = BTreeMap::new();
+                if t(v, body_idx) == "{" {
+                    let const_end = paired(v, body_idx);
+                    if const_end < v.len() {
+                        parse_enum_variant_methods(
+                            &v[body_idx + 1..const_end],
+                            kotlin,
+                            &mut method_returns,
+                        );
                     }
                 }
                 c.variants.push(name.clone());
@@ -1070,12 +1482,14 @@ fn parse_tokens(
                     args,
                     arg_literals,
                     arg_strings,
+                    method_returns,
                 });
             }
             if t(ts, m) == ";" {
                 m += 1;
             }
         }
+        let mut raw_ctors: Vec<RawEnumCtor> = Vec::new();
         while m < body_end {
             if t(ts, m) == ";" {
                 m += 1;
@@ -1255,49 +1669,37 @@ fn parse_tokens(
                 } else {
                     Vec::new()
                 };
+                let eq_expr: Option<Vec<&str>> =
+                    if is_enum && t(ts, after) == "=" && finish > after + 1 {
+                        Some(
+                            ts[after + 1..finish]
+                                .iter()
+                                .map(|token| token.text.as_str())
+                                .collect(),
+                        )
+                    } else {
+                        None
+                    };
                 if is_enum && name == c.name.rsplit('.').next().unwrap_or(&c.name) {
                     let params = split(&ts[par + 1..end], ",");
-                    let names: Vec<_> = params
-                        .iter()
-                        .map(|param| field(param, kotlin).map(|param| param.name))
-                        .collect();
-                    let mut bindings = BTreeMap::new();
-                    for statement in body.split_inclusive(|token| *token == ";") {
-                        let (target, source) = match statement {
-                            ["this", ".", target, "=", source, ";"] => (target, source),
-                            [target, "=", source, ";"]
-                                if !names.iter().any(|name| name.as_deref() == Some(*target)) =>
-                            {
-                                (target, source)
-                            }
-                            _ => {
-                                bindings.clear();
-                                break;
-                            }
-                        };
-                        if let Some(index) = names
-                            .iter()
-                            .position(|name| name.as_deref() == Some(*source))
-                        {
-                            if bindings.insert((*target).to_owned(), index).is_some() {
-                                bindings.clear();
-                                break;
-                            }
+                    let body_tokens =
+                        if t(ts, after) == "{" && finish <= ts.len() && finish >= after + 2 {
+                            &ts[after + 1..finish - 1]
                         } else {
-                            bindings.clear();
-                            break;
-                        }
-                    }
-                    c.enum_constructors.push(bindings);
+                            &[]
+                        };
+                    raw_ctors.push(parse_raw_enum_ctor(&params, body_tokens, kotlin));
                 }
                 if name != c.name.rsplit('.').next().unwrap_or(&c.name) {
+                    let returned_enum_expr =
+                        parse_enum_return_expr(&body, eq_expr.as_deref(), kotlin);
+                    let returned_field = match &returned_enum_expr {
+                        Some(EnumReturnExpr::Field(f)) => Some(f.clone()),
+                        _ => None,
+                    };
                     c.methods.push(Method {
-                        returned_field: match body.as_slice() {
-                            ["return", field, ";"] | ["return", "this", ".", field, ";"] => {
-                                Some((*field).to_owned())
-                            }
-                            _ => None,
-                        },
+                        returned_field,
+                        returned_enum_expr,
                         name,
                         ty,
                         annotations: anns,
@@ -1321,6 +1723,7 @@ fn parse_tokens(
                 }
                 let is_static = ts[m..end].iter().any(|x| x.text == "static");
                 let is_transient = ts[m..end].iter().any(|x| x.text == "transient");
+                let is_final = ts[m..end].iter().any(|x| x.text == "final");
                 if (is_static || is_interface)
                     && !kotlin
                     && t(ts, par) == "="
@@ -1337,10 +1740,14 @@ fn parse_tokens(
                 {
                     f.annotations = anns;
                     f.doc = docs;
+                    f.is_final = is_final;
                     c.fields.push(f);
                 }
                 m = end + 1;
             }
+        }
+        if is_enum && !raw_ctors.is_empty() {
+            c.enum_constructors = resolve_enum_constructors(raw_ctors);
         }
         classes.push(c);
         i = body_end + 1;

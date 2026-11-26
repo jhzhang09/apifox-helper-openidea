@@ -1,6 +1,8 @@
 pub mod apifox;
+pub mod classfile;
 pub mod documentation;
 pub mod export;
+pub mod external;
 pub mod navigation;
 pub mod openapi;
 pub mod plugin;

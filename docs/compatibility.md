@@ -4,19 +4,19 @@
 
 ## 源码识别
 
-| 范围 | 已支持 |
-| --- | --- |
-| Spring / OpenFeign | RestController、Controller、FeignClient、RequestMapping、Get/Post/Put/Delete/PatchMapping，类/方法路径和路径/方法数组，接口/泛型父类映射继承合并，跨类/接口/Kotlin `object` 与 `companion object` 路由常量及 `+` 拼接折叠 |
-| JAX-RS | Path、GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS、Produces/Consumes |
-| 请求参数 | RequestBody、RequestParam、PathVariable、RequestHeader、CookieValue、RequestPart、MultipartFile、`@Parameter(in=...)` 位置覆盖、`@ModelAttribute` DTO 字段说明透传；JAX-RS 常见 Query/Path/Header/Cookie/FormParam |
-| 服务端参数 | 忽略 RequestAttribute、Context、Servlet 请求/响应、Principal、Authentication、BindingResult 等 |
-| DTO | 嵌套类型、静态内部类、record、泛型、继承、List/Set/数组/Map、枚举（`@JsonValue` 与 `x-apifox-enum`）、循环引用、类型位置注解 |
-| 包装类型 | 业务包装保留实际字段；解包 ResponseEntity、HttpEntity、Mono、Optional 等，Flux 按数组处理 |
-| Kotlin | 显式类型的 data class 构造参数、属性、可空类型、显式返回类型的 suspend fun、`object` / `companion object` 常量 |
-| 说明 | Javadoc、KDoc、Java /// 注释，以及常见 Swagger/OpenAPI 说明与 `@Operation(tags=...)` 注解 |
-| 字段 | JsonProperty、JSONField、SerializedName 命名，JsonIgnore 与类级 `@JsonIgnoreProperties`、`@JsonNaming` 策略（SnakeCase/KebabCase/LowerCase/UpperCamelCase），常见 Bean Validation 约束 |
-| 基础库 | JDK Properties；Hutool Tree 5.8.x 默认节点结构；SseEmitter 与 text/event-stream |
-| OpenIDEA 集成 | Endpoints 面板索引、Java/Kotlin 控制器方法行标记（Line Markers）、打开侧栏/调试时按编辑器光标自动同步聚焦对应接口 |
+| 范围               | 已支持                                                                                                                                                                                                                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Spring / OpenFeign | RestController、Controller、FeignClient、RequestMapping、Get/Post/Put/Delete/PatchMapping，类/方法路径和路径/方法数组，条件路由重载合并（`consumes`/`produces`/`params`/`headers`），接口/泛型父类映射继承合并，跨类/接口/Kotlin `object` 与 `companion object` 路由常量及 `+` 拼接折叠 |
+| JAX-RS             | Path、GET/POST/PUT/DELETE/PATCH/HEAD/OPTIONS、Produces/Consumes                                                                                                                                                                                                                         |
+| 请求参数           | RequestBody、RequestParam、PathVariable、RequestHeader、CookieValue、RequestPart、MultipartFile、WebFlux `FilePart`/`Part`、`@Parameter(in=...)` 位置覆盖、`@ModelAttribute` DTO 字段说明透传；JAX-RS 常见 Query/Path/Header/Cookie/FormParam                                           |
+| 服务端参数         | 忽略 RequestAttribute、Context、Servlet 请求/响应、Principal、Authentication、BindingResult 等                                                                                                                                                                                          |
+| DTO                | 嵌套类型、静态内部类、record、泛型、继承、List/Set/数组/Map/`Map.Entry`、枚举（`@JsonValue` 含 Lombok/Kotlin/委托/内置变换、`x-apifox-enum`）、循环引用、类型位置注解；可选本地 Maven/Gradle JAR（`-sources.jar` / `.class`）与离线 `mvn`/`javap` 外部类型解析                          |
+| 包装类型           | 业务包装保留实际字段；解包 ResponseEntity、HttpEntity、Mono、Optional 等，Flux 按数组处理                                                                                                                                                                                               |
+| Kotlin             | 显式类型的 data class 构造参数、属性、可空类型、显式返回类型的 suspend fun、`object` / `companion object` 常量                                                                                                                                                                          |
+| 说明               | Javadoc、KDoc、Java /// 注释，以及常见 Swagger/OpenAPI 说明与 `@Operation(tags=...)` 注解                                                                                                                                                                                               |
+| 字段               | JsonProperty、JSONField、SerializedName 命名，JsonIgnore 与类级 `@JsonIgnoreProperties`、`@JsonNaming` 策略（SnakeCase/KebabCase/LowerCase/UpperCamelCase），常见 Bean Validation 约束                                                                                                  |
+| 基础库             | JDK Properties；Hutool Tree 5.8.x 默认节点结构；SseEmitter 与 text/event-stream                                                                                                                                                                                                         |
+| OpenIDEA 集成      | Endpoints 面板索引、Java/Kotlin 控制器方法行标记（Line Markers）、打开侧栏/调试时按编辑器光标自动同步聚焦对应接口                                                                                                                                                                       |
 
 Hutool Tree 保留 ID 泛型、递归 children 和开放的动态字段。可识别 TreeNodeConfig.DEFAULT_CONFIG 的字面量字段名 setter；局部定制、表达式键名、运行时扩展字段需要核对。
 

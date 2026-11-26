@@ -44,6 +44,13 @@ impl Snapshot {
     }
 }
 
+pub fn exists(root: &str) -> Result<bool, Error> {
+    let Some(text) = host::storage::get(&key(root))? else {
+        return Ok(false);
+    };
+    Ok(!text.is_empty() && text.len() <= MAX_BYTES)
+}
+
 pub fn load(root: &str) -> Result<Option<Snapshot>, Error> {
     let Some(text) = host::storage::get(&key(root))? else {
         return Ok(None);

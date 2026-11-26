@@ -1079,3 +1079,90 @@ fn upload_allows_confirmed_sync_for_unresolved_external_types_but_blocks_real_er
     assert!(err.to_string().contains("已阻止上传"), "{err}");
     assert_eq!(h.requests().len(), 1);
 }
+
+#[test]
+fn scan_keeps_single_task_open_across_phases() {
+    let h = MockHost::install().with_capabilities(&["project.read", "editor.read", "storage"]);
+    h.add_file(
+        "src/UserController.java",
+        "package demo;\n@RestController\n@RequestMapping(\"/users\")\npublic class UserController {\n    @GetMapping(\"/{id}\") public String get(@PathVariable String id) { return id; }\n}\n",
+    );
+
+    let export = scan(&h.invocation(), "project").expect("scan succeeds");
+    assert_eq!(export.endpoints.len(), 1);
+
+    let tasks = h.tasks();
+    assert_eq!(tasks.len(), 1);
+    assert!(tasks[0].ended);
+    assert_eq!(tasks[0].title, "解析 API 和数据模型");
+    assert!(
+        tasks[0]
+            .reports
+            .iter()
+            .any(|(_, _, msg)| msg.as_deref() == Some("正在生成 OpenAPI 文档...")),
+        "{:?}",
+        tasks[0].reports
+    );
+}
+
+#[test]
+fn endpoints_provider_skips_unrelated_dtos_and_resolves_inherited_and_constant_routes() {
+    use openidea_plugin::endpoints::EndpointsProvider;
+
+    let h = MockHost::install();
+    h.add_file(
+        "src/Routes.java",
+        "package demo;\npublic class Routes { public static final String PREFIX = \"/api\"; }\n",
+    );
+    h.add_file(
+        "src/OwnerConsts.java",
+        "package demo;\npublic class OwnerConsts { public static final String SUB = \"/items\"; }\n",
+    );
+    h.add_file(
+        "src/BaseApi.java",
+        "package demo;\npublic class BaseApi { @GetMapping(\"/health\") public String health() { return \"ok\"; } }\n",
+    );
+    // Unrelated DTO with intentionally unclosed brace must not be parsed or break endpoints().
+    h.add_file(
+        "src/UnrelatedBrokenDto.java",
+        "package demo; class UnrelatedBrokenDto {",
+    );
+    h.add_file(
+        "src/ItemController.java",
+        "package demo;\nimport static demo.Routes.PREFIX;\n@RestController\n@RequestMapping(PREFIX)\npublic class ItemController extends BaseApi {\n    @GetMapping(OwnerConsts.SUB) public String list() { return \"\"; }\n}\n",
+    );
+    h.add_file(
+        "src/main/resources/application.yml",
+        "spring:\n  application:\n    name: demo\n",
+    );
+
+    let mut plugin = ApifoxHelper;
+    let eps = plugin.endpoints(&h.invocation()).unwrap();
+    let paths: Vec<_> = eps.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["/api/items", "/api/health"]);
+}
+
+#[test]
+fn views_render_uses_lightweight_snapshot_exists_without_deserializing() {
+    use openidea_plugin::views::{Body, Views};
+
+    let h = MockHost::install().with_capabilities(&["project.read", "storage"]);
+    h.add_file(
+        "src/PingController.java",
+        "package demo;\n@RestController\npublic class PingController { @GetMapping(\"/ping\") public String ping() { return \"ok\"; } }\n",
+    );
+
+    assert!(!apifox_helper_openidea::snapshot::exists("/project").unwrap());
+    let export = scan(&h.invocation(), "project").unwrap();
+    let snap = apifox_helper_openidea::snapshot::Snapshot::new("/project".into(), export).unwrap();
+    snap.save().unwrap();
+    assert!(apifox_helper_openidea::snapshot::exists("/project").unwrap());
+
+    let view = ApifoxHelper
+        .render("apifox", None, &h.invocation())
+        .unwrap();
+    let Body::Html(html) = view.body else {
+        panic!("expected html body");
+    };
+    assert!(html.contains("\"snapshotAvailable\":true"));
+}

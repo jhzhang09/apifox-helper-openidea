@@ -1,5 +1,5 @@
 //! 以完整类型签名注册模型，泛型实例各自生成组件，循环引用保留为 $ref。
-use crate::source::{self, Class, Field, annotation, has};
+use crate::source::{self, Class, EnumConstructor, EnumReturnExpr, Field, annotation, has};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -136,10 +136,28 @@ impl<'a> ClassIndex<'a> {
         ctx: &Class,
         respect_external: bool,
     ) -> ResolveOutcome<'a> {
-        if name.contains('.')
-            && let Some(c) = self.get_qualified(name)
-        {
-            return ResolveOutcome::Found(c);
+        if name.contains('.') {
+            if let Some(c) = self.get_qualified(name) {
+                return ResolveOutcome::Found(c);
+            }
+            if let Some((head, tail)) = name.split_once('.') {
+                if let ResolveOutcome::Found(outer) = self.resolve(head, ctx, false) {
+                    let candidate = format!("{}.{tail}", outer.qualified());
+                    if let Some(c) = self.get_qualified(&candidate) {
+                        return ResolveOutcome::Found(c);
+                    }
+                }
+                for imp in ctx
+                    .imports
+                    .iter()
+                    .filter(|i| !i.ends_with(".*") && i.rsplit('.').next() == Some(head))
+                {
+                    let candidate = format!("{imp}.{tail}");
+                    if let Some(c) = self.get_qualified(&candidate) {
+                        return ResolveOutcome::Found(c);
+                    }
+                }
+            }
         }
         let mut buf = String::new();
         let mut enclosing = ctx.name.as_str();
@@ -329,7 +347,14 @@ impl<'a> Schemas<'a> {
         }
     }
     pub(crate) fn external_name(name: &str, ctx: &Class) -> String {
-        if name.contains('.') {
+        if let Some((head, tail)) = name.split_once('.') {
+            if let Some(import) = ctx
+                .imports
+                .iter()
+                .find(|i| !i.ends_with(".*") && i.rsplit('.').next() == Some(head))
+            {
+                return format!("{import}.{tail}");
+            }
             return name.into();
         }
         if let Some(import) = ctx
@@ -341,8 +366,13 @@ impl<'a> Schemas<'a> {
         }
         for full in [
             "java.util.Properties",
+            "java.util.Map.Entry",
             "cn.hutool.core.lang.tree.Tree",
             "org.springframework.web.servlet.mvc.method.annotation.SseEmitter",
+            "org.springframework.http.codec.multipart.FilePart",
+            "org.springframework.http.codec.multipart.Part",
+            "jakarta.servlet.http.Part",
+            "javax.servlet.http.Part",
             "org.springframework.core.io.Resource",
             "org.springframework.core.io.InputStreamResource",
             "org.springframework.core.io.ByteArrayResource",
@@ -409,6 +439,8 @@ impl<'a> Schemas<'a> {
             "Properties"
                 | "Tree"
                 | "SseEmitter"
+                | "FilePart"
+                | "Part"
                 | "Resource"
                 | "InputStreamResource"
                 | "ByteArrayResource"
@@ -437,6 +469,14 @@ impl<'a> Schemas<'a> {
                 "cn.hutool.core.lang.tree.Tree" => return self.hutool_tree(ty, ctx),
                 "org.springframework.web.servlet.mvc.method.annotation.SseEmitter" => {
                     return json!({"type":"string","description":"SSE 事件流"});
+                }
+                "org.springframework.http.codec.multipart.FilePart"
+                | "org.springframework.http.codec.multipart.Part"
+                | "jakarta.servlet.http.Part"
+                | "javax.servlet.http.Part" => {
+                    if self.resolve(&ty.name, ctx).is_none() {
+                        return json!({"type":"string","format":"binary"});
+                    }
                 }
                 "org.springframework.core.io.Resource"
                 | "org.springframework.core.io.InputStreamResource"
@@ -502,6 +542,19 @@ impl<'a> Schemas<'a> {
                 }
                 _ => (),
             }
+        }
+        if (ty.name == "Map.Entry"
+            || ty.name == "java.util.Map.Entry"
+            || (simple == "Entry" && Self::external_name(&ty.name, ctx) == "java.util.Map.Entry"))
+            && self.resolve(&ty.name, ctx).is_none()
+        {
+            return json!({
+                "type": "object",
+                "additionalProperties": self.schema(
+                    ty.args.get(1).unwrap_or(&Type::parse("Object")),
+                    ctx
+                )
+            });
         }
         match simple {
             "ResponseEntity" | "HttpEntity" | "Optional" | "Mono" | "CompletionStage"
@@ -626,83 +679,181 @@ impl<'a> Schemas<'a> {
             annotation(annotations, "JsonValue")
                 .is_some_and(|ann| ann.value("value").as_deref() != Some("false"))
         };
-        let targets: Vec<_> = class
+        let mut raw_targets: Vec<(Option<EnumReturnExpr>, &str, Option<&str>)> = class
             .fields
             .iter()
             .filter(|field| enabled(&field.annotations))
-            .map(|field| (Some(&field.name), &field.ty))
+            .map(|field| {
+                (
+                    Some(EnumReturnExpr::Field(field.name.clone())),
+                    field.ty.as_str(),
+                    None,
+                )
+            })
             .chain(
                 class
                     .methods
                     .iter()
                     .filter(|method| enabled(&method.annotations))
-                    .map(|method| (method.returned_field.as_ref(), &method.ty)),
+                    .map(|method| {
+                        (
+                            resolve_enum_method_expr(class, method),
+                            method.ty.as_str(),
+                            Some(method.name.as_str()),
+                        )
+                    }),
             )
             .collect();
-        let json_val_target = match (targets.as_slice(), class.enum_constructors.as_slice()) {
-            ([(Some(name), ty)], [bindings]) => {
-                bindings.get(*name).map(|idx| (*idx, Type::parse(ty)))
+
+        // 若同时在字段与同名 getter 上标注 @JsonValue，按同一目标去重。
+        let mut targets: Vec<(Option<EnumReturnExpr>, &str, Option<&str>)> = Vec::new();
+        for item in raw_targets.drain(..) {
+            if let Some(expr) = &item.0
+                && targets
+                    .iter()
+                    .any(|(existing, _, _)| existing.as_ref() == Some(expr))
+            {
+                continue;
             }
-            _ => None,
-        };
+            targets.push(item);
+        }
+
         let mut used_val_idx = None;
+        let mut resolved_ok = false;
         let mut out_type = json!("string");
         let mut out_format: Option<&'static str> = None;
         let mut values = Vec::new();
 
-        if let Some((idx, ty)) = json_val_target {
-            let primitive = match ty.simple() {
-                "int" | "Integer" | "Int" | "short" | "Short" | "byte" | "Byte" => {
-                    Some(("integer", Some("int32")))
+        if targets.len() == 1 {
+            let (expr_opt, raw_ty, method_name) = &targets[0];
+            match expr_opt {
+                Some(EnumReturnExpr::Name) => {
+                    resolved_ok = true;
+                    out_type = json!("string");
+                    values = class
+                        .enum_items
+                        .iter()
+                        .map(|item| json!(item.name))
+                        .collect();
                 }
-                "long" | "Long" | "BigInteger" => Some(("integer", Some("int64"))),
-                "float" | "Float" => Some(("number", Some("float"))),
-                "double" | "Double" | "BigDecimal" | "Number" => Some(("number", Some("double"))),
-                "boolean" | "Boolean" => Some(("boolean", None)),
-                "String" | "char" | "Character" | "Char" | "CharSequence" => Some(("string", None)),
-                _ => None,
-            };
-            if let Some((tname, fmt)) = primitive {
-                let mut extracted = Vec::with_capacity(class.enum_items.len());
-                let mut ok = true;
-                for item in &class.enum_items {
-                    if item.arg_literals.get(idx).copied() != Some(true) {
-                        ok = false;
-                        break;
-                    }
-                    let is_str = item.arg_strings.get(idx).copied().unwrap_or(false);
-                    let raw = &item.args[idx];
-                    let parsed = match tname {
-                        "integer" if !is_str => raw.parse::<i64>().ok().map(|v| json!(v)),
-                        "number" if !is_str => raw.parse::<f64>().ok().map(|v| json!(v)),
-                        "boolean" if !is_str => raw.parse::<bool>().ok().map(|v| json!(v)),
-                        "string" if is_str => Some(json!(raw)),
-                        _ => None,
-                    };
-                    if let Some(v) = parsed {
-                        extracted.push(v);
-                    } else {
-                        ok = false;
-                        break;
+                Some(EnumReturnExpr::NameLower) => {
+                    resolved_ok = true;
+                    out_type = json!("string");
+                    values = class
+                        .enum_items
+                        .iter()
+                        .map(|item| json!(item.name.to_ascii_lowercase()))
+                        .collect();
+                }
+                Some(EnumReturnExpr::NameUpper) => {
+                    resolved_ok = true;
+                    out_type = json!("string");
+                    values = class
+                        .enum_items
+                        .iter()
+                        .map(|item| json!(item.name.to_ascii_uppercase()))
+                        .collect();
+                }
+                Some(EnumReturnExpr::Ordinal) => {
+                    resolved_ok = true;
+                    out_type = json!("integer");
+                    out_format = Some("int32");
+                    values = (0..class.enum_items.len()).map(|idx| json!(idx)).collect();
+                }
+                Some(EnumReturnExpr::Field(field_name)) => {
+                    let ty = Type::parse(raw_ty);
+                    if let Some((tname, fmt)) = primitive_enum_schema_type(ty.simple()) {
+                        let ctors = enum_constructors_for(class);
+                        let mut extracted = Vec::with_capacity(class.enum_items.len());
+                        let mut common_idx: Option<Option<usize>> = None;
+                        let mut ok = !ctors.is_empty();
+                        for item in &class.enum_items {
+                            if !ok {
+                                break;
+                            }
+                            let mut matches = ctors.iter().filter(|c| c.arity == item.args.len());
+                            let (Some(ctor), None) = (matches.next(), matches.next()) else {
+                                ok = false;
+                                break;
+                            };
+                            let parsed = if let Some(&idx) = ctor.bindings.get(field_name) {
+                                if item.arg_literals.get(idx).copied() != Some(true) {
+                                    None
+                                } else {
+                                    let is_str =
+                                        item.arg_strings.get(idx).copied().unwrap_or(false);
+                                    common_idx = Some(match common_idx {
+                                        None => Some(idx),
+                                        Some(prev) if prev == Some(idx) => Some(idx),
+                                        _ => None,
+                                    });
+                                    parse_enum_literal(tname, &item.args[idx], is_str)
+                                }
+                            } else if let Some((raw, is_str)) = ctor.const_bindings.get(field_name)
+                            {
+                                common_idx = Some(None);
+                                parse_enum_literal(tname, raw, *is_str)
+                            } else {
+                                None
+                            };
+                            if let Some(v) = parsed {
+                                extracted.push(v);
+                            } else {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        if ok && !extracted.is_empty() {
+                            resolved_ok = true;
+                            used_val_idx = common_idx.flatten();
+                            out_type = json!(tname);
+                            out_format = fmt;
+                            values = extracted;
+                        }
                     }
                 }
-                if ok && !extracted.is_empty() {
-                    used_val_idx = Some(idx);
-                    out_type = json!(tname);
-                    out_format = fmt;
-                    values = extracted;
+                Some(EnumReturnExpr::Method(_)) | None => {
+                    if let Some(mname) = method_name {
+                        let ty = Type::parse(raw_ty);
+                        if let Some((tname, fmt)) = primitive_enum_schema_type(ty.simple()) {
+                            let mut extracted = Vec::with_capacity(class.enum_items.len());
+                            let mut ok = true;
+                            for item in &class.enum_items {
+                                let Some((raw, is_str)) = item.method_returns.get(*mname) else {
+                                    ok = false;
+                                    break;
+                                };
+                                let Some(v) = parse_enum_literal(tname, raw, *is_str) else {
+                                    ok = false;
+                                    break;
+                                };
+                                extracted.push(v);
+                            }
+                            if ok && !extracted.is_empty() {
+                                resolved_ok = true;
+                                out_type = json!(tname);
+                                out_format = fmt;
+                                values = extracted;
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        if !targets.is_empty() && used_val_idx.is_none() {
+        if !targets.is_empty() && !resolved_ok {
+            let suffix = if class.path.is_empty() {
+                String::new()
+            } else {
+                format!("（{}）", class.path)
+            };
             self.warn(format!(
-                "无法可靠解析 {} 的 @JsonValue 构造参数绑定或枚举值",
+                "无法可靠解析 {} 的 @JsonValue 构造参数绑定或枚举值{suffix}",
                 class.qualified()
             ));
             return json!({"x-apifox-unresolved":true});
         }
-        if used_val_idx.is_none() {
+        if !resolved_ok {
             values = class
                 .enum_items
                 .iter()
@@ -978,6 +1129,86 @@ pub fn model_name(ty: &Type) -> String {
         "Array".repeat(ty.array as usize)
     )
 }
+fn primitive_enum_schema_type(simple: &str) -> Option<(&'static str, Option<&'static str>)> {
+    match simple {
+        "int" | "Integer" | "Int" | "short" | "Short" | "byte" | "Byte" => {
+            Some(("integer", Some("int32")))
+        }
+        "long" | "Long" | "BigInteger" => Some(("integer", Some("int64"))),
+        "float" | "Float" => Some(("number", Some("float"))),
+        "double" | "Double" | "BigDecimal" | "Number" => Some(("number", Some("double"))),
+        "boolean" | "Boolean" => Some(("boolean", None)),
+        "String" | "char" | "Character" | "Char" | "CharSequence" => Some(("string", None)),
+        _ => None,
+    }
+}
+
+fn parse_enum_literal(tname: &str, raw: &str, is_str: bool) -> Option<Value> {
+    match tname {
+        "integer" if !is_str => raw.parse::<i64>().ok().map(|v| json!(v)),
+        "number" if !is_str => raw.parse::<f64>().ok().map(|v| json!(v)),
+        "boolean" if !is_str => raw.parse::<bool>().ok().map(|v| json!(v)),
+        "string" if is_str => Some(json!(raw)),
+        _ => None,
+    }
+}
+
+fn resolve_enum_method_expr(
+    class: &Class,
+    method: &crate::source::Method,
+) -> Option<EnumReturnExpr> {
+    let mut expr = method.returned_enum_expr.clone()?;
+    let mut visited = BTreeSet::new();
+    visited.insert(method.name.clone());
+    for _ in 0..4 {
+        let EnumReturnExpr::Method(callee) = &expr else {
+            return Some(expr);
+        };
+        if !visited.insert(callee.clone()) {
+            return None;
+        }
+        let target = class
+            .methods
+            .iter()
+            .find(|m| m.name == *callee && m.params.is_empty())?;
+        expr = target.returned_enum_expr.clone()?;
+    }
+    None
+}
+
+fn enum_constructors_for(class: &Class) -> Vec<EnumConstructor> {
+    if !class.enum_constructors.is_empty() {
+        return class.enum_constructors.clone();
+    }
+    if has(&class.annotations, "AllArgsConstructor") {
+        let mut bindings = BTreeMap::new();
+        for (idx, f) in class.fields.iter().enumerate() {
+            bindings.insert(f.name.clone(), idx);
+        }
+        return vec![EnumConstructor {
+            arity: class.fields.len(),
+            bindings,
+            const_bindings: BTreeMap::new(),
+        }];
+    }
+    if has(&class.annotations, "RequiredArgsConstructor") {
+        let mut bindings = BTreeMap::new();
+        let mut arity = 0usize;
+        for f in &class.fields {
+            if f.is_final || has(&f.annotations, "NonNull") {
+                bindings.insert(f.name.clone(), arity);
+                arity += 1;
+            }
+        }
+        return vec![EnumConstructor {
+            arity,
+            bindings,
+            const_bindings: BTreeMap::new(),
+        }];
+    }
+    Vec::new()
+}
+
 fn signature_hash(signature: &str) -> u64 {
     // 固定算法使冲突名不依赖扫描顺序或 Rust 随机哈希种子。
     signature.bytes().fold(0xcbf29ce484222325, |hash, byte| {

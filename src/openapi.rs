@@ -63,13 +63,13 @@ fn path_matches(target: &str, scope_path: &str) -> bool {
         || (target.starts_with(prefix) && target.as_bytes().get(prefix.len()) == Some(&b'/'))
 }
 impl Scope {
-    fn accepts_class(&self, c: &Class) -> bool {
+    pub(crate) fn accepts_class(&self, c: &Class) -> bool {
         if let Some((path, _)) = &self.method_line {
             return &c.path == path;
         }
         self.paths.is_empty() || self.paths.iter().any(|p| path_matches(&c.path, p))
     }
-    fn accepts(&self, c: &Class, m: &Method) -> bool {
+    pub(crate) fn accepts(&self, c: &Class, m: &Method) -> bool {
         if let Some((path, line)) = &self.method_line {
             return &c.path == path && m.line <= *line && m.end_line >= *line;
         }
@@ -140,51 +140,233 @@ fn path_of(anns: &[source::Annotation]) -> Vec<String> {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| vec![String::new()])
 }
-fn media(anns: &[source::Annotation], class: &Class, key: &str, default: &str) -> Vec<String> {
+fn normalize_media_type(v: &str) -> String {
+    let trimmed = v.trim();
+    if let Some(rest) = trimmed.strip_prefix('!') {
+        let inner = normalize_media_type(rest);
+        return if inner.is_empty() {
+            String::new()
+        } else {
+            format!("!{inner}")
+        };
+    }
+    if let Some((_, tail)) = trimmed.rsplit_once(".MediaType.") {
+        return normalize_media_type(tail);
+    }
+    match trimmed {
+        "MediaType.APPLICATION_JSON_VALUE"
+        | "MediaType.APPLICATION_JSON"
+        | "MediaType.APPLICATION_JSON_UTF8_VALUE"
+        | "MediaType.APPLICATION_JSON_UTF8"
+        | "APPLICATION_JSON_VALUE"
+        | "APPLICATION_JSON"
+        | "APPLICATION_JSON_UTF8_VALUE"
+        | "APPLICATION_JSON_UTF8" => "application/json".into(),
+        "MediaType.APPLICATION_FORM_URLENCODED_VALUE"
+        | "MediaType.APPLICATION_FORM_URLENCODED"
+        | "APPLICATION_FORM_URLENCODED_VALUE"
+        | "APPLICATION_FORM_URLENCODED" => "application/x-www-form-urlencoded".into(),
+        "MediaType.MULTIPART_FORM_DATA_VALUE"
+        | "MediaType.MULTIPART_FORM_DATA"
+        | "MULTIPART_FORM_DATA_VALUE"
+        | "MULTIPART_FORM_DATA" => "multipart/form-data".into(),
+        "MediaType.TEXT_PLAIN_VALUE"
+        | "MediaType.TEXT_PLAIN"
+        | "TEXT_PLAIN_VALUE"
+        | "TEXT_PLAIN" => "text/plain".into(),
+        "MediaType.TEXT_EVENT_STREAM_VALUE"
+        | "MediaType.TEXT_EVENT_STREAM"
+        | "TEXT_EVENT_STREAM_VALUE"
+        | "TEXT_EVENT_STREAM" => "text/event-stream".into(),
+        "MediaType.APPLICATION_XML_VALUE"
+        | "MediaType.APPLICATION_XML"
+        | "APPLICATION_XML_VALUE"
+        | "APPLICATION_XML" => "application/xml".into(),
+        "MediaType.TEXT_XML_VALUE" | "MediaType.TEXT_XML" | "TEXT_XML_VALUE" | "TEXT_XML" => {
+            "text/xml".into()
+        }
+        "MediaType.TEXT_HTML_VALUE" | "MediaType.TEXT_HTML" | "TEXT_HTML_VALUE" | "TEXT_HTML" => {
+            "text/html".into()
+        }
+        "MediaType.APPLICATION_OCTET_STREAM_VALUE"
+        | "MediaType.APPLICATION_OCTET_STREAM"
+        | "APPLICATION_OCTET_STREAM_VALUE"
+        | "APPLICATION_OCTET_STREAM" => "application/octet-stream".into(),
+        "MediaType.APPLICATION_NDJSON_VALUE"
+        | "MediaType.APPLICATION_NDJSON"
+        | "APPLICATION_NDJSON_VALUE"
+        | "APPLICATION_NDJSON" => "application/x-ndjson".into(),
+        "MediaType.APPLICATION_PDF_VALUE"
+        | "MediaType.APPLICATION_PDF"
+        | "APPLICATION_PDF_VALUE"
+        | "APPLICATION_PDF" => "application/pdf".into(),
+        "MediaType.ALL_VALUE" | "MediaType.ALL" | "ALL_VALUE" | "ALL" => "*/*".into(),
+        _ => trimmed
+            .split(';')
+            .next()
+            .unwrap_or(trimmed)
+            .trim()
+            .to_string(),
+    }
+}
+fn explicit_media(anns: &[source::Annotation], class: &Class, key: &str) -> Vec<String> {
+    let ann_name = if key == "produces" {
+        "Produces"
+    } else {
+        "Consumes"
+    };
     let vals = anns
         .iter()
-        .chain(class.annotations.iter())
         .find_map(|a| {
             let v = a.values(key);
             if v.is_empty() { None } else { Some(v) }
         })
+        .or_else(|| annotation(anns, ann_name).map(|a| a.values("value")))
         .or_else(|| {
-            annotation(
-                anns,
-                if key == "produces" {
-                    "Produces"
-                } else {
-                    "Consumes"
-                },
-            )
-            .or_else(|| {
-                annotation(
-                    &class.annotations,
-                    if key == "produces" {
-                        "Produces"
-                    } else {
-                        "Consumes"
-                    },
-                )
+            class.annotations.iter().find_map(|a| {
+                let v = a.values(key);
+                if v.is_empty() { None } else { Some(v) }
             })
-            .map(|a| a.values("value"))
         })
-        .unwrap_or_else(|| vec![default.into()]);
+        .or_else(|| annotation(&class.annotations, ann_name).map(|a| a.values("value")))
+        .unwrap_or_default();
     vals.into_iter()
-        .map(|v| match v.as_str() {
-            "MediaType.APPLICATION_JSON_VALUE" | "MediaType.APPLICATION_JSON" => {
-                "application/json".into()
-            }
-            "MediaType.TEXT_PLAIN_VALUE" | "MediaType.TEXT_PLAIN" => "text/plain".into(),
-            "MediaType.MULTIPART_FORM_DATA_VALUE" | "MediaType.MULTIPART_FORM_DATA" => {
-                "multipart/form-data".into()
-            }
-            "MediaType.TEXT_EVENT_STREAM_VALUE" | "MediaType.TEXT_EVENT_STREAM" => {
-                "text/event-stream".into()
-            }
-            _ => v.split(';').next().unwrap_or(&v).trim().to_string(),
-        })
+        .map(|v| normalize_media_type(&v))
+        .filter(|v| !v.is_empty())
         .collect()
+}
+fn media(anns: &[source::Annotation], class: &Class, key: &str, default: &str) -> Vec<String> {
+    let vals: Vec<String> = explicit_media(anns, class, key)
+        .into_iter()
+        .filter(|v| !v.starts_with('!'))
+        .collect();
+    if vals.is_empty() {
+        vec![default.into()]
+    } else {
+        vals
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct RouteConditions {
+    consumes: BTreeSet<String>,
+    produces: BTreeSet<String>,
+    params: BTreeSet<String>,
+    headers: BTreeSet<String>,
+}
+fn normalize_condition_expr(raw: &str, lowercase_key: bool) -> String {
+    let trimmed = raw.trim();
+    if let Some((k, v)) = trimmed.split_once("!=") {
+        let key = if lowercase_key {
+            k.trim().to_ascii_lowercase()
+        } else {
+            k.trim().to_string()
+        };
+        format!("{key}!={}", v.trim())
+    } else if let Some((k, v)) = trimmed.split_once('=') {
+        let key = if lowercase_key {
+            k.trim().to_ascii_lowercase()
+        } else {
+            k.trim().to_string()
+        };
+        format!("{key}={}", v.trim())
+    } else if lowercase_key {
+        trimmed.to_ascii_lowercase()
+    } else {
+        trimmed.to_string()
+    }
+}
+fn route_conditions(anns: &[source::Annotation], class: &Class) -> RouteConditions {
+    let consumes = explicit_media(anns, class, "consumes")
+        .into_iter()
+        .map(|v| v.to_ascii_lowercase())
+        .filter(|v| v != "*/*")
+        .collect();
+    let produces = explicit_media(anns, class, "produces")
+        .into_iter()
+        .map(|v| v.to_ascii_lowercase())
+        .filter(|v| v != "*/*")
+        .collect();
+    let params = anns
+        .iter()
+        .chain(class.annotations.iter())
+        .flat_map(|a| a.values("params"))
+        .map(|v| normalize_condition_expr(&v, false))
+        .filter(|v| !v.is_empty())
+        .collect();
+    let headers = anns
+        .iter()
+        .chain(class.annotations.iter())
+        .flat_map(|a| a.values("headers"))
+        .map(|v| normalize_condition_expr(&v, true))
+        .filter(|v| !v.is_empty())
+        .collect();
+    RouteConditions {
+        consumes,
+        produces,
+        params,
+        headers,
+    }
+}
+fn media_condition_distinguishes(a: &BTreeSet<String>, b: &BTreeSet<String>) -> bool {
+    if a == b {
+        return false;
+    }
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    let pos_a: BTreeSet<&str> = a
+        .iter()
+        .map(String::as_str)
+        .filter(|v| !v.starts_with('!'))
+        .collect();
+    let pos_b: BTreeSet<&str> = b
+        .iter()
+        .map(String::as_str)
+        .filter(|v| !v.starts_with('!'))
+        .collect();
+    pos_a.is_disjoint(&pos_b)
+}
+impl RouteConditions {
+    fn distinguishing_reasons(&self, other: &Self) -> Vec<&'static str> {
+        let mut reasons = Vec::new();
+        if media_condition_distinguishes(&self.consumes, &other.consumes) {
+            reasons.push("consumes");
+        }
+        if media_condition_distinguishes(&self.produces, &other.produces) {
+            reasons.push("produces");
+        }
+        if self.params != other.params {
+            reasons.push("params");
+        }
+        if self.headers != other.headers {
+            reasons.push("headers");
+        }
+        reasons
+    }
+    fn is_distinct_from(&self, other: &Self) -> bool {
+        !self.distinguishing_reasons(other).is_empty()
+    }
+}
+fn is_multipart_type(ty: &Type, ctx: &Class, schemas: &mut Schemas) -> bool {
+    let simple = ty.simple();
+    if simple == "MultipartFile" {
+        return true;
+    }
+    if matches!(simple, "FilePart" | "Part") && schemas.resolve(&ty.name, ctx).is_none() {
+        let external = Schemas::external_name(&ty.name, ctx);
+        if matches!(
+            external.as_str(),
+            "org.springframework.http.codec.multipart.FilePart"
+                | "org.springframework.http.codec.multipart.Part"
+                | "jakarta.servlet.http.Part"
+                | "javax.servlet.http.Part"
+        ) {
+            return true;
+        }
+    }
+    ty.args
+        .iter()
+        .any(|arg| is_multipart_type(arg, ctx, schemas))
 }
 fn join_path(a: &str, b: &str) -> String {
     let p = format!("{}/{}", a.trim_matches('/'), b.trim_matches('/'));
@@ -196,6 +378,7 @@ fn operation(
     m: &Method,
     schemas: &mut Schemas,
     path: &str,
+    verb: &str,
 ) -> Value {
     schemas.begin_operation();
     let title = crate::documentation::operation_title(m);
@@ -345,13 +528,9 @@ fn operation(
         if let Some(default) = default {
             schema["default"] = typed_value(&default, &schema);
         }
-        if loc == "form"
-            || ty.simple() == "MultipartFile"
-            || ty.args.iter().any(|t| t.simple() == "MultipartFile")
-        {
-            multipart |= ty.simple() == "MultipartFile"
-                || ty.args.iter().any(|t| t.simple() == "MultipartFile")
-                || has(&p.annotations, "RequestPart");
+        let is_multipart = is_multipart_type(&ty, declaration, schemas);
+        if loc == "form" || is_multipart {
+            multipart |= is_multipart || has(&p.annotations, "RequestPart");
             if !desc.is_empty() {
                 schema["description"] = json!(desc);
             }
@@ -406,6 +585,26 @@ fn operation(
             "application/x-www-form-urlencoded"
         };
         op["requestBody"] = json!({"required":true,"content":{content:{"schema":schema}}});
+    }
+    if op.get("requestBody").is_none() && matches!(verb, "POST" | "PUT" | "PATCH") {
+        let consumes: Vec<String> = explicit_media(&m.annotations, class, "consumes")
+            .into_iter()
+            .filter(|v| !v.starts_with('!') && v != "*/*")
+            .collect();
+        if !consumes.is_empty() {
+            let mut content = serde_json::Map::new();
+            for media in consumes {
+                let schema = if media.starts_with("text/") {
+                    json!({"type": "string"})
+                } else if media == "application/octet-stream" {
+                    json!({"type": "string", "format": "binary"})
+                } else {
+                    json!({"type": "object"})
+                };
+                content.insert(media, json!({"schema": schema}));
+            }
+            op["requestBody"] = json!({"required": false, "content": content});
+        }
     }
     op["parameters"] = json!(params);
     let mut response =
@@ -929,9 +1128,10 @@ pub fn list_endpoints(
     let mut operation_ids = HashSet::new();
     let mut seen_routes = HashSet::new();
     for c in classes {
-        if !["RestController", "Controller", "FeignClient", "Path"]
-            .iter()
-            .any(|a| has(&c.annotations, a))
+        if c.is_external
+            || !["RestController", "Controller", "FeignClient", "Path"]
+                .iter()
+                .any(|a| has(&c.annotations, a))
         {
             continue;
         }
@@ -1001,6 +1201,105 @@ pub fn list_endpoints(
     out
 }
 
+fn merge_operation(target: &mut Value, incoming: &Value) {
+    if target["description"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+        && let Some(desc) = incoming["description"]
+            .as_str()
+            .filter(|s| !s.trim().is_empty())
+    {
+        target["description"] = json!(desc);
+    }
+    if target.get("deprecated") == Some(&json!(true))
+        && incoming.get("deprecated") != Some(&json!(true))
+        && let Some(obj) = target.as_object_mut()
+    {
+        obj.remove("deprecated");
+    }
+    if let Some(incoming_params) = incoming.get("parameters").and_then(Value::as_array)
+        && let Some(target_params) = target
+            .as_object_mut()
+            .and_then(|o| o.get_mut("parameters"))
+            .and_then(Value::as_array_mut)
+    {
+        let mut seen: HashSet<(String, String)> = target_params
+            .iter()
+            .map(|p| {
+                (
+                    p["name"].as_str().unwrap_or("").to_string(),
+                    p["in"].as_str().unwrap_or("").to_string(),
+                )
+            })
+            .collect();
+        for p in incoming_params {
+            let name = p["name"].as_str().unwrap_or("").to_string();
+            let loc = p["in"].as_str().unwrap_or("").to_string();
+            if seen.insert((name, loc.clone())) {
+                let mut cloned = p.clone();
+                if loc != "path" {
+                    cloned["required"] = json!(false);
+                }
+                target_params.push(cloned);
+            }
+        }
+    }
+    let incoming_has_content = incoming
+        .pointer("/requestBody/content")
+        .and_then(Value::as_object)
+        .is_some_and(|c| !c.is_empty());
+    if incoming_has_content {
+        let incoming_body = &incoming["requestBody"];
+        let target_has_content = target
+            .pointer("/requestBody/content")
+            .and_then(Value::as_object)
+            .is_some();
+        if target_has_content {
+            if let (Some(tc), Some(ic)) = (
+                target
+                    .pointer_mut("/requestBody/content")
+                    .and_then(Value::as_object_mut),
+                incoming_body.get("content").and_then(Value::as_object),
+            ) {
+                for (media, val) in ic {
+                    tc.entry(media.clone()).or_insert_with(|| val.clone());
+                }
+            }
+            if incoming_body.get("required") == Some(&json!(false)) {
+                target["requestBody"]["required"] = json!(false);
+            }
+        } else {
+            let mut body = incoming_body.clone();
+            body["required"] = json!(false);
+            target["requestBody"] = body;
+        }
+    } else if target.get("requestBody").is_some_and(Value::is_object) {
+        target["requestBody"]["required"] = json!(false);
+    }
+    if let (Some(t_resps), Some(i_resps)) = (
+        target.get_mut("responses").and_then(Value::as_object_mut),
+        incoming.get("responses").and_then(Value::as_object),
+    ) {
+        for (code, resp) in i_resps {
+            if let Some(t_resp) = t_resps.get_mut(code) {
+                if let Some(ic) = resp.get("content").and_then(Value::as_object) {
+                    if let Some(tc) = t_resp.get_mut("content").and_then(Value::as_object_mut) {
+                        for (media, val) in ic {
+                            tc.entry(media.clone()).or_insert_with(|| val.clone());
+                        }
+                    } else if let Some(t_obj) = t_resp.as_object_mut() {
+                        t_obj.insert("content".into(), json!(ic));
+                    }
+                }
+            } else {
+                t_resps.insert(code.clone(), resp.clone());
+            }
+        }
+    }
+}
+
 pub fn generate(classes: &[Class], scope: &Scope, title: &str) -> Export {
     generate_with_project(
         classes,
@@ -1020,9 +1319,12 @@ pub fn generate_with_project(
     let mut endpoint_meta: Vec<(BTreeSet<String>, BTreeSet<String>, BTreeSet<String>)> = Vec::new();
     let mut paths = json!({});
     let mut operation_ids = BTreeSet::new();
+    let mut route_entries: HashMap<(String, String), (usize, Vec<RouteConditions>)> =
+        HashMap::new();
     for c in classes {
-        // 仅声明方法映射不会注册 Spring 控制器；注释掉的类不能制造重复路由。
-        if !scope.accepts_class(c)
+        // 仅声明方法映射不会注册 Spring 控制器；注释掉的类和外部 JAR 类不能制造重复路由。
+        if c.is_external
+            || !scope.accepts_class(c)
             || !["RestController", "Controller", "FeignClient", "Path"]
                 .iter()
                 .any(|a| has(&c.annotations, a))
@@ -1077,35 +1379,88 @@ pub fn generate_with_project(
                             schemas.notices.insert(msg.clone());
                         }
                         let declaration = if em.is_inherited { em.owner } else { c };
-                        let mut op =
-                            operation(&effective_class, declaration, m, &mut schemas, &cleaned);
-                        let id = format!("{}_{}_{}_{}", c.qualified(), m.name, verb, path);
-                        let id = crate::schema::component_key(&id);
-                        if !operation_ids.insert(id.clone())
-                            || paths[&cleaned][verb.to_lowercase()].is_object()
+                        let mut op = operation(
+                            &effective_class,
+                            declaration,
+                            m,
+                            &mut schemas,
+                            &cleaned,
+                            verb,
+                        );
+                        let cond = route_conditions(&m.annotations, &effective_class);
+                        let verb_lower = verb.to_lowercase();
+                        if let Some((idx, existing_conds)) =
+                            route_entries.get_mut(&(cleaned.clone(), verb_lower.clone()))
                         {
+                            if existing_conds
+                                .iter()
+                                .all(|prev| cond.is_distinct_from(prev))
+                            {
+                                let reasons: Vec<&'static str> =
+                                    ["consumes", "produces", "params", "headers"]
+                                        .into_iter()
+                                        .filter(|dim| {
+                                            existing_conds.iter().any(|prev| {
+                                                cond.distinguishing_reasons(prev).contains(dim)
+                                            })
+                                        })
+                                        .collect();
+                                merge_operation(&mut endpoints[*idx].operation, &op);
+                                paths[&cleaned][&verb_lower] = endpoints[*idx].operation.clone();
+                                endpoint_meta[*idx]
+                                    .0
+                                    .extend(schemas.op_warnings.iter().cloned());
+                                endpoint_meta[*idx]
+                                    .1
+                                    .extend(schemas.op_notices.iter().cloned());
+                                if let Some(msg) = placeholder_notice {
+                                    endpoint_meta[*idx].1.insert(msg);
+                                }
+                                endpoint_meta[*idx]
+                                    .2
+                                    .extend(schemas.op_touched.iter().cloned());
+                                let msg = format!(
+                                    "同路由条件重载 {verb} {cleaned} 已按 {} 合并到同一 OpenAPI 操作（{}）",
+                                    reasons.join("/"),
+                                    c.path
+                                );
+                                schemas.notices.insert(msg.clone());
+                                endpoint_meta[*idx].1.insert(msg);
+                                existing_conds.push(cond);
+                                continue;
+                            }
                             let msg = format!(
-                                "重复路由 {verb} {cleaned}（原始路由 {path}），保留首个声明"
+                                "重复路由 {verb} {cleaned}（原始路由 {path}），保留首个声明（{}）",
+                                c.path
                             );
                             schemas.warnings.insert(msg.clone());
-                            if let Some((_, meta)) = endpoints
-                                .iter()
-                                .zip(&mut endpoint_meta)
-                                .find(|(e, _)| e.path == cleaned && e.method == *verb)
-                            {
-                                meta.0.insert(msg);
-                            }
+                            endpoint_meta[*idx].0.insert(msg);
                             continue;
+                        }
+                        let base_id = crate::schema::component_key(&format!(
+                            "{}_{}_{}_{}",
+                            c.qualified(),
+                            m.name,
+                            verb,
+                            path
+                        ));
+                        let mut id = base_id.clone();
+                        let mut suffix = 2usize;
+                        while !operation_ids.insert(id.clone()) {
+                            id = format!("{base_id}_{suffix}");
+                            suffix += 1;
                         }
                         op["operationId"] = json!(id);
                         if paths[&cleaned].is_null() {
                             paths[&cleaned] = json!({});
                         }
-                        paths[&cleaned][verb.to_lowercase()] = op.clone();
+                        paths[&cleaned][&verb_lower] = op.clone();
                         let mut ep_notices = schemas.op_notices.clone();
                         if let Some(msg) = placeholder_notice {
                             ep_notices.insert(msg);
                         }
+                        route_entries
+                            .insert((cleaned.clone(), verb_lower), (endpoints.len(), vec![cond]));
                         endpoints.push(Endpoint {
                             method: verb.clone(),
                             path: cleaned,

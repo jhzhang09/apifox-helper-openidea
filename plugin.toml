@@ -1,11 +1,11 @@
 id = "jhzhang.apifox-helper"
 name = "Apifox Helper for OpenIDEA"
-version = "0.1.16"
+version = "0.1.17"
 description = "从 Java/Kotlin Spring、JAX-RS 源码生成 OpenAPI，预览嵌套响应模型，同步到 Apifox 并调试 HTTP 接口。"
 authors = ["jhzhang"]
 license = "Apache-2.0"
 homepage = "https://github.com/jhzhang09/apifox-helper-openidea"
-change-notes = "优化大项目扫描性能避免 CPU 预算超限，兼容 Java 文本块、现代类修饰符与 Spring 常见类型，未解析外部依赖类型支持确认后同步。"
+change-notes = "新增外部 Maven/Gradle JAR（源码优先、字节码兜底）与离线 mvn/javap 依赖类型解析，支持 Spring 条件路由重载合并、全流程扫描进度条与后台轻量路由索引防超时/超燃料崩溃，并扩展 Lombok/Kotlin/委托构造/内置变换 @JsonValue 枚举解析与可点击定位。"
 icon = "icon.svg"
 categories = ["tools", "frameworks"]
 engines.openidea = "^1.9"
@@ -14,7 +14,18 @@ activation = ["on-command:*", "on-view:apifox"]
 
 [capabilities]
 required = ["project.read", "project.write", "editor.read", "storage"]
-optional = ["secrets", "clipboard", "net:api.apifox.com", "net:localhost", "net:127.0.0.1", "net:ask"]
+optional = [
+  "secrets",
+  "clipboard",
+  "fs.read:~/.m2/repository",
+  "fs.read:~/.gradle/caches",
+  "process:mvn",
+  "process:javap",
+  "net:api.apifox.com",
+  "net:localhost",
+  "net:127.0.0.1",
+  "net:ask",
+]
 
 [[contributes.secrets]]
 name = "apifox_token"

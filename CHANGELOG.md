@@ -1,5 +1,12 @@
 # 更新记录
 
+## 0.1.17 — 2026-11-26
+
+- 新增外部依赖类型按需解析：优先读取已授权的 `~/.m2/repository` 与 `~/.gradle/caches`（`-sources.jar` 优先、纯 Rust `.class` 字节码兜底，支持父 POM/BOM 与同包嵌套枚举），自定义仓库或未授权目录时回退至离线 `mvn -o` + `javap -p -v` 并按 POM 指纹缓存类路径；同时支持 `FilePart`、`Part`、`Map.Entry` 与显式导入嵌套类型。
+- 支持 Spring 条件路由重载合并：同一 HTTP 方法与路径因 `consumes`、`produces`、`params` 或 `headers` 区分时合并为单个 OpenAPI 操作并提示，不再误报为阻断性重复路由。
+- 修复大项目扫描任务栏进度消失与 60s 超时 / 600 亿 fuel 崩溃：将单个进度 `Task` 贯穿源码解析、外部依赖解析与 OpenAPI 生成并支持取消；`EndpointsProvider` 改为关键字预过滤 + 有界父类/常量追踪，跳过无关 DTO；`Views::render` 不再重复反序列化整份扫描快照。
+- 扩展 `@JsonValue` 枚举解析：支持 Lombok `@AllArgsConstructor`/`@RequiredArgsConstructor`、Kotlin 主构造与表达式方法、`name()`/`toLowerCase`/`toUpperCase`/`ordinal()`、getter 委托、重载与 `this(...)` 委托构造、校验语句及枚举常量覆写方法；真实不可解析错误附带可点击文件路径。
+
 ## 0.1.16 — 2026-11-25
 
 - 为类型解析引入 `ClassIndex` 索引并跳过基础类型的冗余扫描，将宿主 `EndpointsProvider` 改为轻量级路由索引，修复大项目打开或同步时超出 600 亿 WASM fuel 崩溃（#1）。

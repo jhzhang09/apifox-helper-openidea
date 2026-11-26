@@ -35,23 +35,23 @@ public ResponseEntity<Result<Page<User>>> list()
 
 与已发布的 [Spring Api Export v0.1.2](https://github.com/YUYUY9527/spring-api-export/tree/673d3a895bc14074034bd132097a629de24e31b6) 相比：
 
-| 交互 | Spring Api Export v0.1.2 | 本插件 |
-| --- | --- | --- |
-| 入口 | 右键菜单、命令、宿主输入框与多选弹窗 | 常驻侧栏，同时保留命令入口 |
-| 接口选择 | 弹窗接口列表 | 模块/包/Controller 树、搜索、分组右键操作 |
-| 文档检查 | 导出 Markdown / OpenAPI 文件 | 侧栏请求与响应模型树、OpenAPI 预览 |
-| 调试 | 清单中未注册调试命令或视图 | 集成 HTTP 请求编辑、发送和响应查看 |
+| 交互     | Spring Api Export v0.1.2             | 本插件                                    |
+| -------- | ------------------------------------ | ----------------------------------------- |
+| 入口     | 右键菜单、命令、宿主输入框与多选弹窗 | 常驻侧栏，同时保留命令入口                |
+| 接口选择 | 弹窗接口列表                         | 模块/包/Controller 树、搜索、分组右键操作 |
+| 文档检查 | 导出 Markdown / OpenAPI 文件         | 侧栏请求与响应模型树、OpenAPI 预览        |
+| 调试     | 清单中未注册调试命令或视图           | 集成 HTTP 请求编辑、发送和响应查看        |
 
 上述对比来自该版本的 [清单](https://github.com/YUYUY9527/spring-api-export/blob/673d3a895bc14074034bd132097a629de24e31b6/plugin.toml) 和 [命令实现](https://github.com/YUYUY9527/spring-api-export/blob/673d3a895bc14074034bd132097a629de24e31b6/src/lib.rs)。它已有菜单与弹窗界面；本插件的区别是常驻可视化工作台，并提供 Kotlin/JAX-RS 源码识别与调试流程。
 
 ## 兼容性
 
-| 项目 | 要求 |
-| --- | --- |
-| OpenIDEA | 0.1.46 或更新版本，插件 API 1.9+ |
-| 插件 ID | `jhzhang.apifox-helper` |
-| 编译目标 | `wasm32-wasip2`，同一安装包用于 OpenIDEA 支持的平台 |
-| 服务端源码 | Java；Kotlin 需要显式声明类型 |
+| 项目        | 要求                                                               |
+| ----------- | ------------------------------------------------------------------ |
+| OpenIDEA    | 0.1.46 或更新版本，插件 API 1.9+                                   |
+| 插件 ID     | `jhzhang.apifox-helper`                                            |
+| 编译目标    | `wasm32-wasip2`，同一安装包用于 OpenIDEA 支持的平台                |
+| 服务端源码  | Java；Kotlin 需要显式声明类型                                      |
 | Apifox 服务 | 默认公网 `api.apifox.com`，可按本地项目指定私有化 HTTPS API 根地址 |
 
 本项目使用声明解析器，尚不等同于 IntelliJ PSI 或完整的 Java / Kotlin 编译器。外部依赖解析和框架支持有明确边界，使用前请查看 [兼容范围](docs/compatibility.md)。
@@ -99,6 +99,7 @@ public ResponseEntity<Result<Page<User>>> list()
 2. 在 **Settings → Plugins → Apifox Helper → Secrets** 中配置 `Apifox Access Token`，允许 `secrets` 和 `net:api.apifox.com`。
 
    私有化部署：改为设置 `Apifox Private Access Token`，在侧栏 **Apifox 设置 → 私有化 API 地址** 填入管理员提供的 HTTPS 根地址（可带端口或反向代理前缀，不含接口路径），允许 `net:ask` 并授权目标主机。重新选择项目或手填项目 ID 后保存。留空切回公网；该地址不改变接口调试地址。私有化令牌是插件级密钥，多个私服不分别保存令牌；切换实例前请更换对应令牌。
+
 3. 打开侧栏 **Apifox 设置 → 同步项目**。首次点开自动加载项目，可按项目名、团队或 ID 搜索；选中后弹层自动收起，也可以手动填写 ID。
 4. 按需填写接口目录、模型目录、分支和模块 ID，点击 **保存项目配置**。调试地址和默认请求头在接口的 **调试 → 调试设置** 中单独保存。
 5. 扫描后右键目标接口或分组，选择 **上传到 Apifox**，核对同步确认框中的目标和覆盖策略。
@@ -115,19 +116,23 @@ public ResponseEntity<Result<Page<User>>> list()
 
 ## 权限与数据流
 
-| 权限 | 必需 | 用途 |
-| --- | --- | --- |
-| `project.read` | 是 | 读取项目源码、基础配置和 Maven / Gradle 模块信息，定位声明 |
-| `project.write` | 是 | 用户执行导出时写入 OpenAPI 文件 |
-| `editor.read` | 是 | 读取光标位置和未保存的编辑缓冲区 |
-| `storage` | 是 | 按本地项目根目录保存同步配置 |
-| `secrets` | 否 | 检查访问令牌是否已设置，并由宿主注入请求头 |
-| `clipboard` | 否 | 点击“复制 cURL / OpenAPI”时写入系统剪贴板 |
-| `net:api.apifox.com` | 否 | 用户选择项目时查询列表，执行同步时上传 OpenAPI |
-| `net:localhost` / `net:127.0.0.1` | 否 | 本机 HTTP(S) 接口调试 |
-| `net:ask` | 否 | 查询或同步私有化 Apifox、调试其他 HTTPS 主机时，按主机询问授权 |
+| 权限                              | 必需 | 用途                                                                        |
+| --------------------------------- | ---- | --------------------------------------------------------------------------- |
+| `project.read`                    | 是   | 读取项目源码、基础配置和 Maven / Gradle 模块信息，定位声明                  |
+| `project.write`                   | 是   | 用户执行导出时写入 OpenAPI 文件                                             |
+| `editor.read`                     | 是   | 读取光标位置和未保存的编辑缓冲区                                            |
+| `storage`                         | 是   | 按本地项目根目录保存同步配置                                                |
+| `secrets`                         | 否   | 检查访问令牌是否已设置，并由宿主注入请求头                                  |
+| `clipboard`                       | 否   | 点击“复制 cURL / OpenAPI”时写入系统剪贴板                                   |
+| `fs.read:~/.m2/repository`        | 否   | 按需读取本地 Maven 仓库依赖 JAR（`-sources.jar` / `.class`）以补全外部模型  |
+| `fs.read:~/.gradle/caches`        | 否   | 按需读取本地 Gradle 缓存依赖 JAR（`-sources.jar` / `.class`）以补全外部模型 |
+| `process:mvn`                     | 否   | 本地仓库未授权或自定义路径时，离线获取 Maven 依赖类路径（`mvn -o`）         |
+| `process:javap`                   | 否   | 在获取类路径后按需读取外部类字节码结构（`javap -p -v`）                     |
+| `net:api.apifox.com`              | 否   | 用户选择项目时查询列表，执行同步时上传 OpenAPI                              |
+| `net:localhost` / `net:127.0.0.1` | 否   | 本机 HTTP(S) 接口调试                                                       |
+| `net:ask`                         | 否   | 查询或同步私有化 Apifox、调试其他 HTTPS 主机时，按主机询问授权              |
 
-离线生成文档无需网络或令牌。插件没有遥测、后台同步或任意进程执行权限。
+离线生成文档无需网络或令牌；可选的 `fs.read` 与 `process:mvn` / `process:javap` 仅在用户显式授权后用于按需解析本地依赖类型，插件没有遥测、后台同步或任意进程执行权限。
 
 - **项目查询**：向 Apifox 发出 GET 请求，返回团队和项目名称、ID。
 - **文档同步**：上传生成的 OpenAPI，包含接口路径、数据模型、说明与示例；不上传 Java / Kotlin 源文件。

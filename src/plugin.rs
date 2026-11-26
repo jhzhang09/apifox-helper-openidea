@@ -17,6 +17,8 @@ use std::collections::BTreeSet;
 const VIEW: &str = "apifox";
 const FILE_LIMIT: u32 = 10_000;
 const MAX_SOURCE_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ENDPOINT_PARSE_FILES: usize = 1_500;
+const MAX_ENDPOINT_EXTRA_FILES: usize = 64;
 
 thread_local! {
     static PENDING_FOCUS: RefCell<Option<(String, String, Option<String>)>> = const { RefCell::new(None) };
@@ -107,8 +109,11 @@ fn load_project_sources(
     project: &host::Project,
     root: &str,
     strict_syntax: bool,
-    report_progress: bool,
+    task: Option<&host::Task>,
 ) -> Result<ProjectSources, Error> {
+    if task.is_some_and(|t| t.is_cancelled()) {
+        return Err(Error::Cancelled);
+    }
     let mut paths = project.find_files("**/*.java", FILE_LIMIT)?;
     let kt = project.find_files("**/*.kt", FILE_LIMIT)?;
     if paths.len() >= FILE_LIMIT as usize || kt.len() >= FILE_LIMIT as usize {
@@ -125,9 +130,13 @@ fn load_project_sources(
     let mut classes = Vec::new();
     let mut settings = crate::project::ProjectSettings::default();
     let mut bytes = 0;
-    let task = report_progress.then(|| host::begin_task("解析 API 和数据模型", true));
+    if total > 0
+        && let Some(task) = task
+    {
+        task.report(0, Some(total as u32), Some("正在解析项目源码..."));
+    }
     for (i, path) in production_paths.iter().enumerate() {
-        if task.as_ref().is_some_and(|t| t.is_cancelled()) {
+        if task.is_some_and(|t| t.is_cancelled()) {
             return Err(Error::Cancelled);
         }
         // read_file 已优先读取未保存缓冲区；恢复的标签页不一定有版本化内存文档。
@@ -151,10 +160,10 @@ fn load_project_sources(
             }
         }
         settings.java(&text);
-        if let Some(task) = &task
-            && (i % 32 == 0 || i + 1 == total)
+        if let Some(task) = task
+            && (i == 0 || (i + 1) % 16 == 0 || i + 1 == total)
         {
-            task.report(i as u32, Some(total as u32), Some(path));
+            task.report((i + 1) as u32, Some(total as u32), Some(&rel));
         }
     }
     let mut warnings = Vec::new();
@@ -164,6 +173,203 @@ fn load_project_sources(
             &project.read_file(".apifox-helper.properties")?,
         );
     }
+    let mut config_notices = Vec::new();
+    for glob in [
+        "**/application.yml",
+        "**/application.yaml",
+        "**/application.properties",
+    ] {
+        if task.is_some_and(|t| t.is_cancelled()) {
+            return Err(Error::Cancelled);
+        }
+        let files = project.find_files(glob, 1000)?;
+        if files.len() >= 1000 {
+            return Err("基础配置文件超过扫描上限".into());
+        }
+        for path in files
+            .into_iter()
+            .filter(|p| !source::ignored_path(&relative(root, p)))
+        {
+            let text = project.read_file(&path)?;
+            if let Err(error) = settings.config(&path, &text) {
+                config_notices.push(error);
+            }
+        }
+    }
+    Ok(ProjectSources {
+        classes,
+        settings,
+        warnings,
+        config_notices,
+    })
+}
+
+fn looks_like_endpoint_file(text: &str) -> bool {
+    [
+        "RestController",
+        "Controller",
+        "FeignClient",
+        "Mapping",
+        "@Path",
+        "@GET",
+        "@POST",
+        "@PUT",
+        "@DELETE",
+        "@PATCH",
+        "@HEAD",
+        "@OPTIONS",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+fn push_simple_type_names(raw: &str, out: &mut std::collections::HashSet<String>) {
+    let head = raw.split('<').next().unwrap_or(raw).trim();
+    if head.is_empty() {
+        return;
+    }
+    for seg in head.split('.') {
+        let seg = seg.trim();
+        if seg.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            out.insert(seg.to_string());
+        }
+    }
+}
+
+fn collect_endpoint_related_names(classes: &[source::Class]) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    for c in classes {
+        for base in c.bases.iter().chain(&c.interfaces) {
+            push_simple_type_names(base, &mut names);
+        }
+        for imp in &c.static_imports {
+            let parts: Vec<&str> = imp.split('.').collect();
+            if parts.len() >= 2 {
+                let owner = parts[parts.len() - 2].trim();
+                if owner
+                    .chars()
+                    .next()
+                    .is_some_and(|ch| ch.is_ascii_uppercase())
+                {
+                    names.insert(owner.to_string());
+                }
+            }
+        }
+        for ann in c
+            .annotations
+            .iter()
+            .chain(c.methods.iter().flat_map(|m| m.annotations.iter()))
+        {
+            if matches!(
+                ann.name.as_str(),
+                "RequestMapping"
+                    | "GetMapping"
+                    | "PostMapping"
+                    | "PutMapping"
+                    | "DeleteMapping"
+                    | "PatchMapping"
+                    | "Path"
+            ) {
+                for expr in ann.args.values().flatten() {
+                    for token in expr.split(|ch: char| {
+                        !ch.is_ascii_alphanumeric() && ch != '_' && ch != '.' && ch != '$'
+                    }) {
+                        if let Some((owner, _)) = token.split_once('.') {
+                            let owner = owner.trim();
+                            if owner
+                                .chars()
+                                .next()
+                                .is_some_and(|ch| ch.is_ascii_uppercase())
+                            {
+                                names.insert(owner.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
+fn load_endpoint_sources(project: &host::Project, root: &str) -> Result<ProjectSources, Error> {
+    let mut paths = project.find_files("**/*.java", FILE_LIMIT)?;
+    let kt = project.find_files("**/*.kt", FILE_LIMIT)?;
+    if paths.len() >= FILE_LIMIT as usize || kt.len() >= FILE_LIMIT as usize {
+        return Err("项目源码超过扫描上限，请拆分项目后导出，避免产生不完整文档".into());
+    }
+    paths.extend(kt);
+    paths.sort();
+    paths.dedup();
+    let production_paths: Vec<String> = paths
+        .into_iter()
+        .filter(|p| source::production_source(&relative(root, p)))
+        .collect();
+
+    let mut classes = Vec::new();
+    let mut bytes = 0usize;
+    let mut parsed_count = 0usize;
+    let mut unparsed_by_stem: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+
+    for path in production_paths {
+        let text = project.read_file(&path)?;
+        bytes += text.len();
+        if bytes > MAX_SOURCE_BYTES {
+            return Err("源码大小超过 64 MiB，已停止导出".into());
+        }
+        let rel = relative(root, &path);
+        if looks_like_endpoint_file(&text) && parsed_count < MAX_ENDPOINT_PARSE_FILES {
+            parsed_count += 1;
+            if let Ok(parsed) = source::parse_checked(&rel, &text) {
+                classes.extend(parsed);
+            }
+        } else if let Some(stem) = rel
+            .rsplit('/')
+            .next()
+            .and_then(|f| f.rsplit_once('.'))
+            .map(|(s, _)| s.to_string())
+        {
+            unparsed_by_stem.entry(stem).or_default().push(path);
+        }
+    }
+
+    let mut frontier_start = 0usize;
+    let mut extra_parsed = 0usize;
+    for _ in 0..4 {
+        if frontier_start >= classes.len() || extra_parsed >= MAX_ENDPOINT_EXTRA_FILES {
+            break;
+        }
+        let candidates = collect_endpoint_related_names(&classes[frontier_start..]);
+        frontier_start = classes.len();
+        for name in candidates {
+            if extra_parsed >= MAX_ENDPOINT_EXTRA_FILES {
+                break;
+            }
+            if let Some(candidate_paths) = unparsed_by_stem.remove(&name) {
+                for path in candidate_paths {
+                    if extra_parsed >= MAX_ENDPOINT_EXTRA_FILES {
+                        break;
+                    }
+                    extra_parsed += 1;
+                    if let Ok(text) = project.read_file(&path)
+                        && let Ok(parsed) = source::parse_checked(&relative(root, &path), &text)
+                    {
+                        classes.extend(parsed);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut warnings = Vec::new();
+    if project.exists(".apifox-helper.properties")? {
+        warnings = crate::rules::apply(
+            &mut classes,
+            &project.read_file(".apifox-helper.properties")?,
+        );
+    }
+    let mut settings = crate::project::ProjectSettings::default();
     let mut config_notices = Vec::new();
     for glob in [
         "**/application.yml",
@@ -196,12 +402,14 @@ pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
     let project = project(ctx)?;
     let root = project.root()?;
     let config = load_config(ctx)?;
+    let task = host::begin_task("解析 API 和数据模型", true);
+    task.report(0, None, Some("正在发现项目源码..."));
     let ProjectSources {
-        classes,
+        mut classes,
         settings,
         warnings,
         config_notices,
-    } = load_project_sources(&project, &root, true, true)?;
+    } = load_project_sources(&project, &root, true, Some(&task))?;
     let mut scope = Scope::default();
     match scope_name {
         "project" => (),
@@ -229,8 +437,37 @@ pub fn scan(ctx: &Invocation, scope_name: &str) -> Result<Export, Error> {
         }
         _ => return Err("无效的扫描范围".into()),
     }
+    let ext = crate::external::resolve_external_classes_with_task(
+        &project,
+        &root,
+        &classes,
+        &scope,
+        Some(&task),
+    )?;
+    if !ext.classes.is_empty() {
+        classes.extend(ext.classes);
+    }
+    if task.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    task.report(0, None, Some("正在生成 OpenAPI 文档..."));
     let mut export =
         openapi::generate_with_project(&classes, &scope, &config.title, &settings.finish());
+    if ext.resolved_count > 0 {
+        let notice = match (ext.jar_count > 0, ext.javap_count > 0) {
+            (true, true) => format!(
+                "已从本地依赖仓库（{} 个 JAR）与 Maven/javap 解析 {} 个外部类型",
+                ext.jar_count, ext.resolved_count
+            ),
+            (true, false) => format!(
+                "已从本地依赖仓库解析 {} 个外部类型（{} 个 JAR）",
+                ext.resolved_count, ext.jar_count
+            ),
+            (false, true) => format!("已通过 Maven/javap 解析 {} 个外部类型", ext.resolved_count),
+            (false, false) => format!("已解析 {} 个外部类型", ext.resolved_count),
+        };
+        export.notices.push(notice);
+    }
     export.notices.extend(config_notices);
     let mut modules = std::collections::BTreeMap::new();
     for endpoint in &mut export.endpoints {
@@ -738,10 +975,21 @@ impl Views for ApifoxHelper {
             return Err(Error::NotFound(view.into()));
         }
         // 配置随页面渲染同步传入，不依赖 iframe 初始化消息的回复时机。
-        let mut initial = panel_context(ctx)?;
         // 宿主会截断超过 4 MiB 的 HTML；快照通过独立消息恢复，不能嵌入页面脚本。
-        initial["snapshotAvailable"] = json!(initial["snapshot"].is_object());
-        initial.as_object_mut().unwrap().remove("snapshot");
+        let initial = if let Some(proj) = ctx.project() {
+            let mut state = config_state(ctx)?;
+            let root = proj.root()?;
+            state["snapshotAvailable"] = json!(crate::snapshot::exists(&root).unwrap_or(false));
+            if let Some((op_id, tab)) = take_pending_focus(&root) {
+                state["focusOperationId"] = json!(op_id);
+                if let Some(tab) = tab {
+                    state["focusTab"] = json!(tab);
+                }
+            }
+            state
+        } else {
+            json!({"op":"config","config":Config::default(),"tokenSet":false,"projectRoot":null,"snapshotAvailable":false})
+        };
         let initial = initial
             .to_string()
             .replace('<', "\\u003c")
@@ -977,7 +1225,7 @@ impl EndpointsProvider for ApifoxHelper {
             return Ok(Vec::new());
         };
         let root = proj.root()?;
-        let sources = load_project_sources(&proj, &root, false, false)?;
+        let sources = load_endpoint_sources(&proj, &root)?;
         let endpoints = openapi::list_endpoints(&sources.classes, &sources.settings.finish());
         Ok(endpoints
             .into_iter()

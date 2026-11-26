@@ -1063,3 +1063,617 @@ class Resource {
         "string"
     );
 }
+
+#[test]
+fn spring_consumes_overloads_merge_into_single_operation_without_blocking() {
+    let result = export(&[(
+        "PluginCommandController.java",
+        r#"
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
+import io.swagger.v3.oas.annotations.Operation;
+import reactor.core.publisher.Mono;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/plugin/command")
+public class PluginCommandController {
+    @PostMapping(value = "/{type}/{pluginId}/{commandId}", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "POST方式执行插件命令(Json)")
+    public Mono<ResponseEntity<Object>> callCommandPost(
+        @PathVariable String type,
+        @PathVariable String pluginId,
+        @PathVariable String commandId,
+        @RequestParam(required = false) Map<String, Object> pathParam,
+        @RequestBody Mono<Map<String, Object>> paramsMono
+    ) { return null; }
+
+    @PostMapping(value = "/{type}/{pluginId}/{commandId}", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    @Operation(summary = "POST方式执行插件命令(Form)")
+    public Mono<ResponseEntity<Object>> callCommandPost(
+        @PathVariable String type,
+        @PathVariable String pluginId,
+        @PathVariable String commandId,
+        ServerWebExchange exchange
+    ) { return null; }
+}
+"#,
+    )]);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.endpoints.len(), 1);
+    let op = &result.document["paths"]["/plugin/command/{type}/{pluginId}/{commandId}"]["post"];
+    let content = op["requestBody"]["content"].as_object().unwrap();
+    assert!(content.contains_key("application/json"), "{content:?}");
+    assert!(
+        content.contains_key("application/x-www-form-urlencoded"),
+        "{content:?}"
+    );
+    assert_eq!(
+        content["application/x-www-form-urlencoded"]["schema"]["type"],
+        "object"
+    );
+    assert!(
+        result.notices.iter().any(|n| n.contains("同路由条件重载")
+            && n.contains("consumes")
+            && n.contains("（PluginCommandController.java）")),
+        "{:?}",
+        result.notices
+    );
+    assert!(
+        result.endpoints[0]
+            .notices
+            .iter()
+            .any(|n| n.contains("同路由条件重载")),
+        "{:?}",
+        result.endpoints[0].notices
+    );
+}
+
+#[test]
+fn spring_consumes_overload_order_independent_form_then_json() {
+    let result = export(&[(
+        "OrderController.java",
+        r#"
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/cmd")
+public class OrderController {
+    @PostMapping(value = "/run", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public String run(ServerWebExchange exchange) { return null; }
+
+    @PostMapping(value = "/run", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public String run(@RequestBody Map<String, Object> body) { return null; }
+}
+"#,
+    )]);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.endpoints.len(), 1);
+    let content = result.document["paths"]["/cmd/run"]["post"]["requestBody"]["content"]
+        .as_object()
+        .unwrap();
+    assert!(content.contains_key("application/x-www-form-urlencoded"));
+    assert!(content.contains_key("application/json"));
+}
+
+#[test]
+fn spring_produces_params_headers_overloads_merge_and_duplicate_condition_still_errors() {
+    let result = export(&[(
+        "VariantController.java",
+        r#"
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/variants")
+public class VariantController {
+    @GetMapping(value = "/export", produces = MediaType.APPLICATION_JSON_VALUE)
+    public String exportJson() { return null; }
+
+    @GetMapping(value = "/export", produces = MediaType.TEXT_PLAIN_VALUE)
+    public String exportText() { return null; }
+
+    @GetMapping(value = "/search", params = "mode=fast")
+    public String searchFast(@RequestParam String q) { return null; }
+
+    @GetMapping(value = "/search", params = "mode=full")
+    public String searchFull(@RequestParam String q, @RequestParam Integer page) { return null; }
+
+    @GetMapping(value = "/versioned", headers = "X-Api-Version=1")
+    public String v1() { return null; }
+
+    @GetMapping(value = "/versioned", headers = "X-Api-Version=2")
+    public String v2(@RequestHeader("X-Trace") String trace) { return null; }
+}
+"#,
+    )]);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.endpoints.len(), 3);
+    let export_content =
+        result.document["paths"]["/variants/export"]["get"]["responses"]["200"]["content"]
+            .as_object()
+            .unwrap();
+    assert!(export_content.contains_key("application/json"));
+    assert!(export_content.contains_key("text/plain"));
+
+    let search_params = result.document["paths"]["/variants/search"]["get"]["parameters"]
+        .as_array()
+        .unwrap();
+    assert_eq!(search_params.len(), 2);
+    let page_param = search_params
+        .iter()
+        .find(|p| p["name"] == "page")
+        .expect("merged param");
+    assert_eq!(page_param["required"], false);
+
+    let versioned_params = result.document["paths"]["/variants/versioned"]["get"]["parameters"]
+        .as_array()
+        .unwrap();
+    assert_eq!(versioned_params.len(), 1);
+    assert_eq!(versioned_params[0]["name"], "X-Trace");
+    assert_eq!(versioned_params[0]["required"], false);
+
+    assert!(result.notices.iter().any(|n| n.contains("produces")));
+    assert!(result.notices.iter().any(|n| n.contains("params")));
+    assert!(result.notices.iter().any(|n| n.contains("headers")));
+
+    let conflict = export(&[(
+        "TripleController.java",
+        r#"
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/triple")
+public class TripleController {
+    @PostMapping(value = "/exec", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public String exec(@RequestBody Map<String, Object> body) { return null; }
+
+    @PostMapping(value = "/exec", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public String exec(ServerWebExchange exchange) { return null; }
+
+    @PostMapping(value = "/exec", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public String execDup(ServerWebExchange exchange) { return null; }
+}
+"#,
+    )]);
+    assert_eq!(conflict.endpoints.len(), 1);
+    assert!(
+        conflict
+            .warnings
+            .iter()
+            .any(|w| w.contains("重复路由") && w.contains("（TripleController.java）")),
+        "{:?}",
+        conflict.warnings
+    );
+}
+
+#[test]
+fn webflux_file_part_map_entry_and_nested_explicit_import_resolve_cleanly() {
+    let result = export(&[
+        (
+            "demo/Item.java",
+            "package demo; public class Item { public String id; }",
+        ),
+        (
+            "demo/Term.java",
+            "package demo; public class Term { public enum Type { and, or } }",
+        ),
+        (
+            "demo/Part.java",
+            "package demo; public class Part { public String localField; }",
+        ),
+        (
+            "api/UploadController.java",
+            r#"
+package api;
+import demo.Item;
+import demo.Term;
+import org.springframework.http.codec.multipart.FilePart;
+import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import java.util.List;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/api")
+public class UploadController {
+    @PostMapping("/upload")
+    public Mono<String> upload(@RequestPart("file") Mono<FilePart> file, Flux<FilePart> files) {
+        return null;
+    }
+
+    @GetMapping("/entries")
+    public List<Map.Entry<String, List<Item>>> entries() { return null; }
+
+    @GetMapping("/term")
+    public Term.Type termType() { return null; }
+
+    @GetMapping("/local-part")
+    public demo.Part localPart() { return null; }
+}
+"#,
+        ),
+    ]);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    let upload_content = &result.document["paths"]["/api/upload"]["post"]["requestBody"]["content"];
+    assert!(
+        upload_content["multipart/form-data"]["schema"]["properties"]["file"]["format"] == "binary",
+        "{upload_content}"
+    );
+    assert!(
+        upload_content["multipart/form-data"]["schema"]["properties"]["files"]["items"]["format"]
+            == "binary",
+        "{upload_content}"
+    );
+    let entry_schema = &result.document["paths"]["/api/entries"]["get"]["responses"]["200"]["content"]
+        ["application/json"]["schema"]["items"];
+    assert_eq!(entry_schema["type"], "object");
+    assert_eq!(entry_schema["additionalProperties"]["type"], "array");
+    assert_eq!(
+        entry_schema["additionalProperties"]["items"]["$ref"],
+        "#/components/schemas/Item"
+    );
+    let term_ref = &result.document["paths"]["/api/term"]["get"]["responses"]["200"]["content"]["application/json"]
+        ["schema"]["$ref"];
+    assert_eq!(term_ref, "#/components/schemas/Type");
+    assert_eq!(
+        result.document["components"]["schemas"]["Type"]["enum"],
+        json!(["and", "or"])
+    );
+    let local_part_ref = &result.document["paths"]["/api/local-part"]["get"]["responses"]["200"]["content"]
+        ["application/json"]["schema"]["$ref"];
+    assert_eq!(local_part_ref, "#/components/schemas/Part");
+    assert_eq!(
+        result.document["components"]["schemas"]["Part"]["properties"]["localField"]["type"],
+        "string"
+    );
+}
+
+#[test]
+fn conditional_route_overloads_merge_into_single_operation_without_blocking_errors() {
+    let result = export(&[(
+        "PluginController.java",
+        r#"
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
+import java.util.Map;
+
+@RestController
+@RequestMapping("/plugin/command")
+public class PluginController {
+    @PostMapping(value = "/{type}/{pluginId}/{commandId}", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @Operation(summary = "POST方式执行插件命令(Json)")
+    public Mono<ResponseEntity<Object>> callCommandPost(
+            @PathVariable String type,
+            @PathVariable String pluginId,
+            @PathVariable String commandId,
+            @RequestParam(required = false) Map<String, Object> pathParam,
+            @RequestBody Mono<Map<String, Object>> paramsMono) {
+        return null;
+    }
+
+    @PostMapping(value = "/{type}/{pluginId}/{commandId}", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    @Operation(summary = "POST方式执行插件命令(Form)")
+    public Mono<ResponseEntity<Object>> callCommandPost(
+            @PathVariable String type,
+            @PathVariable String pluginId,
+            @PathVariable String commandId,
+            ServerWebExchange exchange) {
+        return null;
+    }
+}
+"#,
+    )]);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.endpoints.len(), 1);
+    assert!(
+        result
+            .notices
+            .iter()
+            .any(|n| n.contains("同路由条件重载") && n.contains("PluginController.java")),
+        "{:?}",
+        result.notices
+    );
+    let post = &result.document["paths"]["/plugin/command/{type}/{pluginId}/{commandId}"]["post"];
+    let content = post["requestBody"]["content"].as_object().unwrap();
+    assert!(content.contains_key("application/json"), "{content:?}");
+    assert!(
+        content.contains_key("application/x-www-form-urlencoded"),
+        "{content:?}"
+    );
+    assert_eq!(
+        content["application/x-www-form-urlencoded"]["schema"]["type"],
+        "object"
+    );
+    assert_eq!(post["requestBody"]["required"], false);
+}
+
+#[test]
+fn conditional_overloads_support_produces_params_headers_and_reverse_order() {
+    let result = export(&[(
+        "ConditionalApi.java",
+        r#"
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
+
+@RestController
+@RequestMapping("/cond")
+public class ConditionalApi {
+    @PostMapping(value = "/submit", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public String submitForm(ServerWebExchange exchange) { return ""; }
+
+    @PostMapping(value = "/submit", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public String submitJson(@RequestBody Payload body) { return ""; }
+
+    @GetMapping(value = "/data", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Payload dataJson() { return null; }
+
+    @GetMapping(value = "/data", produces = MediaType.APPLICATION_XML_VALUE)
+    public String dataXml() { return ""; }
+
+    @GetMapping(value = "/query", params = "mode=fast")
+    public String queryFast(@RequestParam String mode) { return ""; }
+
+    @GetMapping(value = "/query", params = "mode=full", headers = "X-Trace=1")
+    public String queryFull(@RequestParam String mode, @RequestHeader("X-Trace") String trace) { return ""; }
+}
+class Payload { public String name; }
+"#,
+    )]);
+
+    assert!(result.warnings.is_empty(), "{:?}", result.warnings);
+    assert_eq!(result.endpoints.len(), 3);
+
+    let submit_content = result.document["paths"]["/cond/submit"]["post"]["requestBody"]["content"]
+        .as_object()
+        .unwrap();
+    assert!(submit_content.contains_key("application/x-www-form-urlencoded"));
+    assert!(submit_content.contains_key("application/json"));
+
+    let data_content = result.document["paths"]["/cond/data"]["get"]["responses"]["200"]["content"]
+        .as_object()
+        .unwrap();
+    assert!(data_content.contains_key("application/json"));
+    assert!(data_content.contains_key("application/xml"));
+
+    let query_params = result.document["paths"]["/cond/query"]["get"]["parameters"]
+        .as_array()
+        .unwrap();
+    assert!(query_params.iter().any(|p| p["name"] == "mode"));
+    assert!(
+        query_params
+            .iter()
+            .any(|p| p["name"] == "X-Trace" && p["required"] == false)
+    );
+}
+
+#[test]
+fn overlapping_conditional_overload_still_reports_duplicate_route_error() {
+    let result = export(&[(
+        "ConflictController.java",
+        r#"
+import org.springframework.http.MediaType;
+import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ServerWebExchange;
+
+@RestController
+@RequestMapping("/plugin/command")
+public class ConflictController {
+    @PostMapping(value = "/exec", consumes = MediaType.APPLICATION_JSON_VALUE)
+    public void execJson(@RequestBody String body) {}
+
+    @PostMapping(value = "/exec", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public void execForm(ServerWebExchange exchange) {}
+
+    @PostMapping(value = "/exec", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public void execFormDup(ServerWebExchange exchange) {}
+}
+"#,
+    )]);
+
+    assert_eq!(result.endpoints.len(), 1);
+    assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+    assert!(result.warnings[0].contains("重复路由"));
+    assert!(result.warnings[0].contains("ConflictController.java"));
+}
+
+#[test]
+fn resolves_lombok_kotlin_delegating_builtin_and_variant_override_json_value_enums() {
+    let result = export(&[
+        (
+            "src/main/java/demo/CoordUpdateReq.java",
+            r#"
+package demo;
+import com.fasterxml.jackson.annotation.JsonValue;
+import lombok.AllArgsConstructor;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
+
+public class CoordUpdateReq {
+    public CoordType coordType;
+    public RequiredCode requiredCode;
+    public NameLowerEnum nameLower;
+    public NameUpperEnum nameUpper;
+    public OrdinalEnum ordinalEnum;
+    public DelegatingEnum delegatingEnum;
+    public DualAnnotatedEnum dualAnnotated;
+    public VariantOverrideEnum variantOverride;
+
+    @Getter
+    @AllArgsConstructor
+    public enum CoordType {
+        WGS84("wgs84", "GPS坐标"),
+        GCJ02("gcj02", "火星坐标");
+        @JsonValue
+        private final String code;
+        private final String desc;
+    }
+
+    @RequiredArgsConstructor
+    public enum RequiredCode {
+        FAST(1),
+        SLOW(2);
+        @JsonValue
+        private final int code;
+        private String mutableNote;
+    }
+
+    public enum NameLowerEnum {
+        ALPHA, BETA;
+        @JsonValue
+        public String toValue() { return name().toLowerCase(java.util.Locale.ROOT); }
+    }
+
+    public enum NameUpperEnum {
+        first, second;
+        @JsonValue
+        public String toValue() { return this.name().toUpperCase(); }
+    }
+
+    public enum OrdinalEnum {
+        ZERO, ONE;
+        @JsonValue
+        public int indexVal() { return ordinal(); }
+    }
+
+    public enum DelegatingEnum {
+        A("a"),
+        B("b", "B说明");
+        @JsonValue
+        private final String code;
+        private final String desc;
+        DelegatingEnum(String code) { this(code, ""); }
+        DelegatingEnum(String code, String desc) {
+            java.util.Objects.requireNonNull(code);
+            this.code = code;
+            this.desc = desc == null ? "" : desc;
+        }
+        @JsonValue
+        public String value() { return getCode(); }
+        public String getCode() { return code; }
+    }
+
+    public enum DualAnnotatedEnum {
+        X(10), Y(20);
+        @JsonValue
+        private final int code;
+        DualAnnotatedEnum(int code) { this.code = code; }
+        @JsonValue
+        public int getCode() { return this.code; }
+    }
+
+    public enum VariantOverrideEnum {
+        UP { @Override public String getCode() { return "up"; } },
+        DOWN { @Override public String getCode() { return "down"; } };
+        @JsonValue
+        public abstract String getCode();
+    }
+}
+"#,
+        ),
+        (
+            "src/main/kotlin/demo/KtEnum.kt",
+            r#"
+package demo
+import com.fasterxml.jackson.annotation.JsonValue
+
+enum class KtEnum(@JsonValue val code: String) {
+    ON("on"),
+    OFF("off");
+
+    @JsonValue
+    fun asJson(): String = code
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/EnumApi.java",
+            r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/enums")
+public class EnumApi {
+    @PostMapping("/check")
+    public KtEnum check(@RequestBody CoordUpdateReq req) { return null; }
+}
+"#,
+        ),
+    ]);
+
+    assert!(
+        result.warnings.is_empty(),
+        "warnings: {:?}",
+        result.warnings
+    );
+    let schemas = &result.document["components"]["schemas"];
+    assert_eq!(schemas["CoordType"]["type"], "string");
+    assert_eq!(schemas["CoordType"]["enum"], json!(["wgs84", "gcj02"]));
+    assert_eq!(schemas["RequiredCode"]["type"], "integer");
+    assert_eq!(schemas["RequiredCode"]["enum"], json!([1, 2]));
+    assert_eq!(schemas["NameLowerEnum"]["enum"], json!(["alpha", "beta"]));
+    assert_eq!(schemas["NameUpperEnum"]["enum"], json!(["FIRST", "SECOND"]));
+    assert_eq!(schemas["OrdinalEnum"]["type"], "integer");
+    assert_eq!(schemas["OrdinalEnum"]["enum"], json!([0, 1]));
+    assert_eq!(schemas["DelegatingEnum"]["enum"], json!(["a", "b"]));
+    assert_eq!(schemas["DualAnnotatedEnum"]["enum"], json!([10, 20]));
+    assert_eq!(
+        schemas["VariantOverrideEnum"]["enum"],
+        json!(["up", "down"])
+    );
+    assert_eq!(schemas["KtEnum"]["enum"], json!(["on", "off"]));
+}
+
+#[test]
+fn computed_json_value_field_still_warns_with_clickable_file_path() {
+    let result = export(&[
+        (
+            "src/main/java/demo/ComputedEnum.java",
+            r#"
+package demo;
+import com.fasterxml.jackson.annotation.JsonValue;
+public enum ComputedEnum {
+    A(1);
+    @JsonValue
+    private final int code;
+    ComputedEnum(int arg) { this.code = arg + 1; }
+}
+"#,
+        ),
+        (
+            "src/main/java/demo/ComputedApi.java",
+            r#"
+package demo;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class ComputedApi {
+    @GetMapping("/computed")
+    public ComputedEnum get() { return null; }
+}
+"#,
+        ),
+    ]);
+
+    assert_eq!(result.warnings.len(), 1, "{:?}", result.warnings);
+    assert!(result.warnings[0].contains("无法可靠解析 demo.ComputedEnum"));
+    assert!(result.warnings[0].contains("（src/main/java/demo/ComputedEnum.java）"));
+}
